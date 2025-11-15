@@ -1,6 +1,26 @@
-"""
-Utils to start and stop a CARLA server.
-Code adapted from https://github.com/zhejz/carla-roach
+"""CARLA Server Management - Start/Stop/Kill Server Processes.
+
+This module provides utility functions for managing CARLA simulator server
+processes. It handles server lifecycle during automated data collection and
+evaluation runs.
+
+Functions:
+- kill_carla: Forcefully terminate all CARLA server processes
+- start_carla_server: Launch a CARLA server with specified parameters
+- check_server_alive: Verify server is running and responsive
+
+These utilities are essential for:
+1. Automated evaluation across multiple routes (restart between routes)
+2. Crash recovery during long data collection runs
+3. Resource cleanup after experiments
+
+The module handles common issues like zombie processes, port conflicts,
+and GPU memory leaks by forcefully killing and restarting servers.
+
+Code adapted from: https://github.com/zhejz/carla-roach
+
+Functions:
+    kill_carla: Terminate all CARLA server instances
 """
 import subprocess
 import time

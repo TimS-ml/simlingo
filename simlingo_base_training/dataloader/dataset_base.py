@@ -1,8 +1,28 @@
+"""Base dataset class for CARLA driving data.
+
+This module provides the foundational dataset class with common functionality for
+loading, processing, and augmenting CARLA simulation data. It handles file I/O,
+data filtering, augmentation, and waypoint/route processing.
+
+Key Features:
+    - Loads CARLA recordings from disk (images, measurements, bounding boxes)
+    - Filters data by scenario buckets (e.g., acceleration, lateral control)
+    - Applies image augmentations using imgaug
+    - Processes waypoints and routes into model-ready format
+    - Supports camera shift augmentation for robustness
+    - Validates data quality and filters incomplete routes
+
+Attribution:
+    Partially adapted from https://github.com/autonomousvision/carla_garage
+    (MIT License)
+
+Dependencies:
+    - CARLA simulator recordings (compressed JSON measurements, JPG images)
+    - imgaug: Image augmentation library
+    - OpenCV: Image processing
+    - NumPy: Array operations
 """
-Code that loads the dataset for training.
-partially taken from https://github.com/autonomousvision/carla_garage/blob/main/team_code/data.py
-(MIT licence)
-"""
+
 import datetime
 import glob
 import gzip
@@ -28,17 +48,63 @@ from simlingo_training.utils.custom_types import DatasetOutput
 from simlingo_training.utils.projection import get_camera_intrinsics, project_points
 from simlingo_base_training.utils.image_enhancing import histogram_equalization
 
-VIZ_DATA = False
+VIZ_DATA = False  # Debug flag for data visualization
 
 class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
-    """
-    Base class for the dataset.
+    """Base PyTorch Dataset for CARLA driving simulation data.
+
+    Provides core functionality for loading and processing CARLA recordings.
+    Handles data discovery, filtering by scenario buckets, and applying
+    augmentations. Child classes inherit this for specific use cases.
+
+    The dataset loads data from a structured directory hierarchy:
+        data_path/data/simlingo/[weather]/[split]/[town]/[route_id]/
+            - rgb/: Camera images
+            - measurements/: Vehicle state and navigation data
+            - boxes/: Bounding box annotations
+            - results.json.gz: Route completion metrics
+
+    Attributes:
+        images: Array of image file paths for each sample
+        measurements: Array of measurement directory paths
+        boxes: Array of bounding box file paths
+        sample_start: Starting frame index for each sample
+        augment_exists: Boolean flags for augmented camera availability
+        hist_len: Number of historical frames to include
+        pred_len: Number of future frames to predict
+        img_augmentation: Whether to apply image augmentation
+        route_as: Route representation mode ('coords', 'target_point', etc.)
     """
 
     def __init__(self,
             base = False,
             **cfg,
         ):
+        """Initialize the base dataset.
+
+        Discovers all valid routes in the dataset, filters by split and buckets,
+        creates samples with temporal windows, and prepares augmentation pipeline.
+
+        Args:
+            base: Flag indicating this is the base dataset (for compatibility).
+            **cfg: Configuration parameters including:
+                - data_path: Root path to dataset
+                - bucket_path: Path to bucket definitions (scenario filters)
+                - bucket_name: Which bucket to use ('all' or specific scenario)
+                - split: 'train' or 'val'
+                - hist_len: Number of historical frames
+                - pred_len: Number of frames to predict
+                - skip_first_n_frames: Skip initial unstable frames
+                - img_augmentation: Enable image augmentation
+                - img_shift_augmentation: Enable camera shift augmentation
+                - use_town13: Include Town13 in training
+                - use_old_towns: Include older town versions
+
+        Side Effects:
+            - Scans filesystem for available routes
+            - Filters routes by completion metrics
+            - Prints dataset statistics
+        """
         for key, value in cfg.items():
             setattr(self, key, value)
 

@@ -1,6 +1,27 @@
-"""
-Transformation utility functions.
-Code adapted from https://github.com/zhejz/carla-roach
+"""Coordinate Transformation Utilities for BEV Rendering.
+
+This module provides coordinate transformation functions for converting between
+different reference frames used in BEV map rendering:
+- Global/world frame: CARLA's absolute coordinate system
+- Ego/vehicle frame: Local frame centered on the ego vehicle
+- Map/BEV frame: Top-down view aligned with ego heading
+
+Transformations handle:
+- Location transforms (translation + rotation)
+- Vector transforms (rotation only, for velocities/orientations)
+- Orientation transforms (yaw angle conversions)
+
+These are essential for:
+1. Projecting world objects onto the ego-centric BEV map
+2. Converting between CARLA's left-handed and standard right-handed frames
+3. Rotating the BEV map to align with ego vehicle heading
+
+Code adapted from: https://github.com/zhejz/carla-roach
+
+Functions:
+    loc_global_to_ref: Transform location from world to reference frame
+    vec_global_to_ref: Transform vector from world to reference frame
+    orient_global_to_ref: Transform orientation from world to reference frame
 """
 
 import numpy as np

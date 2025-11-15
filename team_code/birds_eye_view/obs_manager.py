@@ -1,6 +1,20 @@
-"""
-base class for observation managers
-Code adapted from https://github.com/zhejz/carla-roach
+"""Observation Manager Base Class - Interface for BEV Renderers.
+
+This module defines the base class interface for observation managers that
+generate bird's-eye-view (BEV) representations of the driving scene.
+
+Observation managers are responsible for:
+1. Defining the observation space (dimensions, channels, dtypes)
+2. Attaching to an ego vehicle to track its state
+3. Rendering BEV observations at each timestep
+
+Different observation managers can implement different rendering styles
+(e.g., ChauffeurNet semantic maps, occupancy grids, etc.).
+
+Code adapted from: https://github.com/zhejz/carla-roach
+
+Classes:
+    ObsManagerBase: Abstract base class for BEV observation generators
 """
 
 

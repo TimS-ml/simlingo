@@ -1,3 +1,13 @@
+# Main configuration file for SimLingo base training
+# This trains the base model without the full multimodal capabilities
+# Uses Hydra for composable configuration management
+
+# Default configuration composition
 defaults:
-  - train_base
-  - experiment: debug #simlingo_base_1
+  - train_base  # Base training configuration (if exists)
+  - experiment: debug  # Experiment config: use 'debug' for testing, 'simlingo_base_1/2/3' for production
+
+# Production experiments available:
+# - experiment: simlingo_base_1  # Seed 42
+# - experiment: simlingo_base_2  # Different seed
+# - experiment: simlingo_base_3  # Different seed

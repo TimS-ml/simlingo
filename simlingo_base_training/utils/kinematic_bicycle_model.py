@@ -1,9 +1,59 @@
+"""Kinematic bicycle model for vehicle motion simulation.
+
+This module provides a kinematic bicycle model for simulating vehicle dynamics
+and forecasting future vehicle states. The model is tuned based on data from
+the World on Rails project.
+
+Key Components:
+    - Config: Configuration with tuned physical parameters
+    - KinematicBicycleModel: Main model for state prediction
+
+The model simulates:
+    - Vehicle position and heading evolution
+    - Speed changes based on throttle/brake inputs
+    - Steering dynamics using bicycle kinematics
+
+Uses:
+    - Forecasting future vehicle states
+    - Understanding model predictions
+    - Data generation and augmentation
+    - Debugging trajectory planner
+
+Attribution:
+    Parameters tuned from World on Rails project.
+
+Dependencies:
+    - NumPy: Numerical operations
+"""
+
 import numpy as np
 # from config import GlobalConfig
 
 class Config:
+    """Configuration class for kinematic bicycle model parameters.
+
+    Contains tuned physical parameters for realistic vehicle simulation.
+    Parameters calibrated on CARLA simulator data.
+
+    Attributes:
+        time_step: Simulation time step in seconds (1/frame_rate).
+        front_wheel_base: Distance from rear to front axle (meters).
+        rear_wheel_base: Distance from rear axle to wheel center (meters).
+        steering_gain: Conversion factor from steering angle to wheel angle.
+        brake_acceleration: Deceleration rate when braking (m/s^2).
+        throttle_acceleration: Acceleration rate when throttling (m/s^2).
+        throttle_values: Polynomial coefficients for throttle speed model.
+        brake_values: Polynomial coefficients for brake speed model.
+        throttle_threshold_during_forecasting: Minimum throttle for acceleration.
+    """
+
     def __init__(self, frame_rate=20):
-        #  Time step for the model (20 frames per second).
+        """Initialize config with tuned parameters.
+
+        Args:
+            frame_rate: Simulation frequency in Hz (default: 20).
+        """
+        # Time step for the model (20 frames per second).
         self.time_step = 1./frame_rate
         # Kinematic bicycle model parameters tuned from World on Rails.
         # Distance from the rear axle to the front axle of the vehicle.

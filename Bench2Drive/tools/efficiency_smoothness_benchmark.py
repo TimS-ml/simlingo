@@ -1,3 +1,22 @@
+"""Driving Efficiency and Smoothness Benchmark for Autonomous Vehicles.
+
+This module evaluates autonomous driving comfort and efficiency using kinematic
+metrics. It computes smoothness scores based on:
+- Jerk (rate of change of acceleration)
+- Lateral and longitudinal acceleration
+- Yaw acceleration and yaw rate
+
+The metrics are based on comfort thresholds derived from human driving studies.
+Smoothness is computed over sliding windows using Savitzky-Golay filtering.
+
+Usage:
+    python efficiency_smoothness_benchmark.py -f <results_file> -m <metric_dir>
+
+Example:
+    python efficiency_smoothness_benchmark.py -f results.json \\
+                                              -m eval_bench2drive220/
+"""
+
 from scipy.signal import savgol_filter
 # import numpy.typing as npt
 import numpy as np
@@ -6,34 +25,51 @@ import re
 import argparse
 import os
 
-# (1) ego_jerk_metric,
+# Comfort thresholds based on human driving studies
+# (1) Maximum acceptable magnitude of jerk (total acceleration change rate)
 max_abs_mag_jerk = 8.37  # [m/s^3]
 
-# (2) ego_lat_acceleration_metric
+# (2) Maximum acceptable lateral acceleration
 max_abs_lat_accel = 4.89  # [m/s^2]
 
-# (3) ego_lon_acceleration_metric
+# (3) Longitudinal acceleration bounds (forward/backward)
 max_lon_accel = 2.40  # [m/s^2]
-min_lon_accel = -4.05
+min_lon_accel = -4.05  # [m/s^2]
 
-# (4) ego_yaw_acceleration_metric
+# (4) Maximum acceptable yaw acceleration (rotation rate change)
 max_abs_yaw_accel = 1.93  # [rad/s^2]
 
-# (5) ego_lon_jerk_metric
+# (5) Maximum acceptable longitudinal jerk
 max_abs_lon_jerk = 4.13  # [m/s^3]
 
-# (6) ego_yaw_rate_metric
+# (6) Maximum acceptable yaw rate (rotation speed)
 max_abs_yaw_rate = 0.95  # [rad/s]
 
-'''
-window size = 8
-'''
+# Note: Default window size for smoothing is 7
 
 def chunk_arrays(arrays, m):
+    """Split multiple arrays into chunks of size m.
+
+    Args:
+        arrays: List of arrays to chunk.
+        m: Chunk size.
+
+    Returns:
+        list: List of chunked arrays.
+    """
     chunks = [chunk_array(arr, m) for arr in arrays]
     return chunks
 
 def chunk_array(arr, m):
+    """Split an array into chunks of size m.
+
+    Args:
+        arr: Array to split.
+        m: Chunk size.
+
+    Returns:
+        list: List of array chunks.
+    """
     chunks = [arr[i * m:(i + 1) * m] for i in range((len(arr) + m - 1) // m)]
     return chunks
 
@@ -48,19 +84,50 @@ def seg_compute_comfort_metric(acceleration,
     deriv_order: int = 1,
     time_interval: float = 0.1,
     per_step: int = 20):
+    """Compute comfort metric over segments of a driving episode.
+
+    Splits a long driving episode into segments and evaluates comfort for each.
+    Returns the proportion of segments that pass all comfort thresholds.
+
+    Args:
+        acceleration: Array of 3D acceleration vectors.
+        angular_velocity: Array of 3D angular velocity vectors.
+        forward_vector: Array of 3D forward direction vectors.
+        right_vector: Array of 3D right direction vectors.
+        location: Array of 3D positions.
+        rotation: Array of 3D rotations.
+        window_size: Savitzky-Golay filter window size.
+        poly_order: Polynomial order for filtering.
+        deriv_order: Derivative order for jerk computation.
+        time_interval: Time step between samples (seconds).
+        per_step: Number of samples per segment.
+
+    Returns:
+        float: Proportion of comfortable segments (0.0 to 1.0).
+    """
     episode_len = len(angular_velocity)
+
+    # Handle short episodes without segmentation
     if episode_len <= per_step:
-        res = compute_comfort_metric( acceleration, angular_velocity, forward_vector, right_vector, location, rotation)
+        res = compute_comfort_metric(acceleration, angular_velocity, forward_vector,
+                                     right_vector, location, rotation)
         return 1. if res else 0.
-    seg_data = chunk_arrays([acceleration, angular_velocity, forward_vector, right_vector, location, rotation], per_step)
-    
+
+    # Split data into segments
+    seg_data = chunk_arrays([acceleration, angular_velocity, forward_vector,
+                            right_vector, location, rotation], per_step)
+
+    # Evaluate each segment
     res = []
     for index in range(len(seg_data[0])):
+        # Skip incomplete segments
         if len(seg_data[0][index]) < per_step:
             continue
-        res.append(compute_comfort_metric(seg_data[0][index], seg_data[1][index], seg_data[2][index], seg_data[3][index], seg_data[4][index], seg_data[5][index]))
-    return res.count(True) / len(res)
-    pass
+        res.append(compute_comfort_metric(seg_data[0][index], seg_data[1][index],
+                                         seg_data[2][index], seg_data[3][index],
+                                         seg_data[4][index], seg_data[5][index]))
+
+    return res.count(True) / len(res) if res else 0.0
 
 def compute_comfort_metric(
     acceleration,

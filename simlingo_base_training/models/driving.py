@@ -1,3 +1,37 @@
+"""Main driving model for SimLingo-Base.
+
+This module defines the complete autonomous driving model architecture that combines:
+    - Vision encoder (LLaVA-Next or ResNet)
+    - Language model backbone (small Llama)
+    - Route and speed encoders
+    - Waypoint and route prediction heads
+
+The model is a PyTorch Lightning module handling training, validation, and prediction.
+
+Key Components:
+    - DrivingModel: Main Lightning module
+    - RouteEncode: ResNet-based route image encoder
+    - NormZeroOne: Normalization layer for inputs
+
+Model Architecture:
+    1. Vision encoder processes camera images → visual embeddings
+    2. Route encoder processes navigation route → route embeddings
+    3. Speed encoder processes current speed → speed embeddings
+    4. All embeddings concatenated and passed through language model
+    5. Prediction heads decode waypoints and routes from language model outputs
+
+Differences from Full SimLingo:
+    - Vision-only (no language commentary)
+    - Smaller language model (x-small, tiny variants)
+    - Simplified prediction targets (waypoints + routes only)
+    - Faster inference and training
+
+Dependencies:
+    - PyTorch Lightning: Training framework
+    - DeepSpeed: Distributed optimization
+    - Vision/language models from encoder and language_model modules
+"""
+
 import pickle as pkl
 from pprint import PrettyPrinter
 from typing import Optional, Tuple
@@ -19,16 +53,46 @@ from simlingo_base_training.utils.custom_types import (
 pprint = PrettyPrinter().pprint
 
 class RouteEncode(nn.Module):
+    """ResNet-based encoder for route images.
+
+    Encodes a route image (e.g., bird's-eye view map) into a feature vector
+    using a pretrained ResNet18 backbone.
+
+    Attributes:
+        backbone: ResNet18 with modified final layer.
+    """
+
     def __init__(self, out_channels: int, pretrained=True):
+        """Initialize route encoder.
+
+        Args:
+            out_channels: Output feature dimension.
+            pretrained: Whether to use ImageNet pretrained weights.
+        """
         super().__init__()
         self.backbone = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1 if pretrained else None)
         self.backbone.fc = nn.Linear(self.backbone.fc.in_features, out_channels)
 
     def forward(self, route):
+        """Encode route image.
+
+        Args:
+            route: Route image tensor, shape [B, C, H, W].
+
+        Returns:
+            Encoded route features, shape [B, 1, out_channels] (with token dim).
+        """
         x = route.to(self.backbone.fc.weight.dtype) / 128.0 - 1.0
         return self.backbone(x).unsqueeze(-2)  # add token dim
 
 class NormZeroOne(nn.Module):
+    """Normalize input tensor to [0, 1] range using fixed min/max values.
+
+    Used to normalize speed and waypoint inputs before feeding to MLPs.
+
+    Attributes:
+        min_max: Registered buffer containing [min, max] values.
+    """
     def __init__(self, min_max: Tuple[float, float]):
         super().__init__()
         self.register_buffer("min_max", torch.tensor(min_max, dtype=torch.float), persistent=False)
@@ -39,6 +103,31 @@ class NormZeroOne(nn.Module):
 
 
 class DrivingModel(pl.LightningModule):
+    """Main PyTorch Lightning module for autonomous driving.
+
+    Combines vision encoding, language model reasoning, and prediction heads
+    for end-to-end waypoint and route prediction from camera images.
+
+    The model architecture:
+        1. Vision encoder (LLaVA-Next or ResNet) encodes camera images
+        2. Route encoder encodes navigation target points
+        3. Speed encoder encodes current vehicle speed
+        4. All embeddings are concatenated and projected to language model dimension
+        5. Language model processes the combined embeddings
+        6. Prediction adaptors decode waypoints and routes
+
+    Attributes:
+        vision_model: Vision encoder module (LLaVA-Next or ResNet).
+        language_model: Language model backbone (small Llama).
+        adaptors: Prediction head adaptors for waypoints/routes.
+        speed_encoder: MLP for encoding current speed.
+        route_encoder: Encoder for target points or route images.
+        language_projection: Linear layer to match vision and language dimensions.
+        lr: Base learning rate.
+        vision_lr: Separate learning rate for vision encoder.
+        speed_wps_mode: Mode for waypoint prediction ('1d' or '2d').
+    """
+
     def __init__(
         self,
         vision_model: nn.Module,
@@ -56,6 +145,24 @@ class DrivingModel(pl.LightningModule):
         speed_wps_mode=False,
         variant=None,
     ):
+        """Initialize the driving model.
+
+        Args:
+            vision_model: Vision encoder (LLaVA-Next or ResNet).
+            language_model: Language model backbone.
+            lr: Base learning rate for most parameters.
+            vision_lr: Separate learning rate for vision encoder (if different).
+            weight_decay: L2 regularization weight.
+            betas: Adam optimizer beta parameters.
+            pct_start: Percentage of training for LR warmup.
+            enable_language: Enable language features (unused in base model).
+            route_as: Route representation mode.
+            speed_as_input: Whether to include speed as input.
+            new_layer_norm_minmax: Use updated normalization ranges.
+            predict_route_as_wps: Predict full route as waypoints.
+            speed_wps_mode: Waypoint prediction mode ('1d' or '2d').
+            variant: Model variant name (unused).
+        """
         super().__init__()
 
         self.save_hyperparameters()

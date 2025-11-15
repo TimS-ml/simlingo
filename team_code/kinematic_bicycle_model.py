@@ -1,5 +1,24 @@
-"""
-Kinematic bicycle model describing the motion of a car given its state and action.
+"""Kinematic Bicycle Model - Vehicle Motion Prediction.
+
+This module implements a kinematic bicycle model for predicting vehicle motion.
+The model approximates a four-wheeled vehicle as a bicycle with front and rear
+wheels, capturing essential kinematic behavior without complex dynamics.
+
+The model is used for:
+1. Forecasting ego vehicle future positions during planning
+2. Predicting trajectories of other vehicles for collision avoidance
+3. Unscented Kalman Filter state prediction in agent_simlingo.py
+
+The bicycle model equations:
+- Slip angle: β = arctan(Lr / (Lf + Lr) * tan(δ))
+- Position update: x' = x + v*cos(θ+β)*dt, y' = y + v*sin(θ+β)*dt
+- Heading update: θ' = θ + v/Lr*sin(β)*dt
+- Speed update: v' = v + a*dt (different models for throttle vs brake)
+
+Parameters are tuned from World on Rails for CARLA simulation accuracy.
+
+Classes:
+    KinematicBicycleModel: Vehicle motion forecaster using bicycle kinematics
 """
 
 import numpy as np

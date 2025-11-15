@@ -1,8 +1,28 @@
+"""HD Map Generator for CARLA Simulation Environments.
+
+This module extracts and saves high-definition (HD) map data from CARLA towns,
+including:
+- Lane markings (center lines, lane boundaries)
+- Lane topology (connections and transitions)
+- Trigger volumes for traffic lights and stop signs
+- Junction information
+
+The generated HD maps are saved as compressed NumPy files (.npz) and can be
+used for visualization, planning, and perception tasks.
+
+Usage:
+    python gen_hdmap.py --save_dir <output_dir> --carla_town <town_name>
+
+Example:
+    python gen_hdmap.py --save_dir ./maps --carla_town Town01
+
+Output:
+    Saves a file like 'Town01_HD_map.npz' containing lane and trigger volume data.
+"""
+
 import carla
 import numpy as np
-
 import cv2
-
 from pathlib import Path
 import os
 import argparse
@@ -11,15 +31,29 @@ import subprocess
 import json
 
 def check_waypoints_status(waypoints_list):
+    """Classify the topology status of a sequence of waypoints.
+
+    Analyzes whether waypoints transition between junctions and normal roads.
+
+    Args:
+        waypoints_list: List of CARLA waypoint objects.
+
+    Returns:
+        str: Classification - 'Junction', 'Normal', 'EnterJunction', 'EnterNormal',
+             'PassJunction', 'PassNormal', 'StartJunctionMultiChange', or 'StartNormalMultiChange'.
+    """
     first_wp = waypoints_list[0]
     init_status = first_wp.is_junction
     current_status = first_wp.is_junction
     change_status_time = 0
+
+    # Count topology transitions
     for wp in waypoints_list[1:]:
         if wp.is_junction != current_status:
             current_status = wp.is_junction
             change_status_time += 1
-        pass
+
+    # Classify based on number of transitions
     if change_status_time == 0:
         return 'Junction' if init_status else 'Normal'
     elif change_status_time == 1:
@@ -30,6 +64,11 @@ def check_waypoints_status(waypoints_list):
         return 'StartJunctionMultiChange' if init_status else 'StartNormalMultiChange'
 
 class TriggerVolumeGettor(object):
+    """Extracts trigger volume information for traffic lights and stop signs.
+
+    Trigger volumes define the 3D regions where traffic signals affect the ego vehicle.
+    This class processes CARLA actors to extract and store these volumes in the HD map.
+    """
     
     @staticmethod
     def get_global_bbx(actor, bbx):

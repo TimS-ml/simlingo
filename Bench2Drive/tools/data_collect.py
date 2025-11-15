@@ -1,3 +1,37 @@
+"""Comprehensive Data Collection System for CARLA Autonomous Driving.
+
+This module provides a complete data collection pipeline for autonomous driving
+simulation in CARLA. It manages:
+
+1. Multi-modal sensor suite:
+   - 6 RGB cameras (front, front-left, front-right, back, back-left, back-right)
+   - 6 depth cameras (same configuration)
+   - 6 semantic segmentation cameras
+   - 6 instance segmentation cameras
+   - 1 top-down bird's-eye view camera
+   - 1 LiDAR sensor with semantic labels
+   - 5 radar sensors
+   - GPS, IMU, and speedometer
+
+2. Annotation generation:
+   - 3D bounding boxes for vehicles, pedestrians, traffic signs, lights
+   - Lane markings and road topology
+   - Weather conditions
+   - Vehicle telemetry (speed, control inputs, acceleration)
+   - Coordinate transformations (world, ego, camera frames)
+
+3. Data organization:
+   - Saves sensor data in organized directory structure
+   - Compresses annotations using gzip
+   - Stores LiDAR as LAZ files for efficiency
+
+The collected data can be used for training perception models, planning
+algorithms, and end-to-end driving systems.
+
+Usage:
+    This module is typically integrated with CARLA leaderboard agents.
+"""
+
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 from leaderboard.envs.sensor_interface import SensorInterface, CallBack, OpenDriveMapReader, SpeedometerReader
 import cv2
@@ -13,10 +47,20 @@ import laspy
 from utils import build_projection_matrix, convert_depth, get_relative_transform, normalize_angle, build_skeleton,  get_matrix, calculate_cube_vertices, compute_2d_distance
 from utils import DIS_CAR_SAVE, DIS_WALKER_SAVE, DIS_SIGN_SAVE, DIS_LIGHT_SAVE
 
+# Earth's equatorial radius for GPS coordinate conversion
 EARTH_RADIUS_EQUA = 6378137.0
 
 class Env_Manager():
-    
+    """Main data collection and sensor management class.
+
+    Manages all aspects of data collection including sensor setup, data processing,
+    annotation generation, and file I/O. Integrates with CARLA's scenario runner
+    and leaderboard systems.
+
+    Attributes:
+        frame_rate: Data collection frequency in Hz.
+    """
+
     frame_rate = 10.0 
 
     def tick(self, input_data):

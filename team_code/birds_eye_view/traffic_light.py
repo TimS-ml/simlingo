@@ -1,6 +1,23 @@
-"""
-Functions used to generate stop lines for the traffic lights.
-Code adapted from https://github.com/zhejz/carla-roach
+"""Traffic Light Handler - Stop Line Generation and State Tracking.
+
+This module manages traffic light interactions for BEV rendering and driving logic.
+It computes stop line positions, trigger volumes, and tracks traffic light states
+to render them correctly in bird's-eye-view semantic maps.
+
+Key functionalities:
+- Extract stop line waypoints from traffic light trigger volumes
+- Determine which traffic lights are relevant to the ego vehicle
+- Track traffic light state changes (red, yellow, green)
+- Render traffic light stop lines in BEV maps with appropriate colors
+
+The traffic light trigger volume defines the area where a vehicle should check
+the light's state. This module computes the intersection of this volume with
+the road to determine the stop line position.
+
+Code adapted from: https://github.com/zhejz/carla-roach
+
+Classes:
+    TrafficLightHandler: Manages traffic light geometry and state for rendering
 """
 
 from collections import deque

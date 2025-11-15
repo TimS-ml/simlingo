@@ -1,7 +1,25 @@
-"""
-Some utility functions e.g. for normalizing angles
-Functions for detecting red lights are adapted from scenario runners
-atomic_criteria.py
+"""TransFuser Utility Functions - Geometry, Coordinate Transforms, and Traffic Detection.
+
+This module provides essential utility functions for the TransFuser-based autonomous
+driving pipeline. It includes geometric transformations, coordinate system conversions,
+and traffic light/stop sign detection logic.
+
+Key functionalities:
+1. Angle normalization: Handle angle wraparound for smooth control
+2. Coordinate transformations: Convert between world, ego, and camera frames
+3. LiDAR processing: Voxelization, alignment, coordinate transforms
+4. Traffic light detection: Check if traffic lights affect the ego vehicle
+5. Bounding box utilities: Transform and manipulate 3D bounding boxes
+
+Traffic light detection is adapted from CARLA Scenario Runner's atomic_criteria.py.
+
+Functions:
+    normalize_angle: Normalize angles to [-pi, pi] range
+    get_relative_transform: Compute relative pose between two coordinate frames
+    lidar_to_ego_coordinate: Transform LiDAR points to ego-vehicle frame
+    preprocess_compass: Extract orientation from IMU sensor
+    inverse_conversion_2d: Transform world coordinates to ego-relative frame
+    command_to_one_hot: Convert navigation command to one-hot encoding
 """
 import math
 import carla

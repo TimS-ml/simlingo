@@ -1,3 +1,27 @@
+"""DriveLM VQA: Utility Functions for Visual Question Answering Generation
+
+This module provides utility functions specifically for generating DriveLM-style Visual
+Question Answering (VQA) pairs from CARLA simulation data. It includes functions for:
+- 3D to 2D projection for determining object visibility in camera view
+- Scenario extraction from route XML files
+- Vehicle light state interpretation
+- Text formatting utilities (articles, number-to-word conversion)
+
+These utilities support the DriveLM VQA generation pipeline by:
+- Determining which objects are visible and should be included in questions
+- Extracting scenario context for question generation
+- Converting numerical/enum values to natural language
+- Providing consistent text formatting across all VQA pairs
+
+Key differences from language_labels/utils.py:
+- Optimized for DriveLM's specific VQA format requirements
+- Different import paths for project-specific utilities
+- Focuses on basic projection without advanced filtering
+
+Typical usage:
+    from drivelm_utils import build_projection_matrix, light_state_to_word
+"""
+
 import numpy as np
 import cv2
 import re

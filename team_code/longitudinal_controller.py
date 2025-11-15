@@ -1,6 +1,21 @@
-"""
-This file holds class implementations for a longitudinal PID controller and a linear regression model as
-longitudinal controller.
+"""Longitudinal Control - Throttle and Brake Controllers.
+
+This module implements longitudinal (speed) control for autonomous driving using
+two different approaches:
+1. PID Controller: Classic feedback control based on speed error
+2. Linear Regression Controller: Data-driven model trained on expert demonstrations
+
+Both controllers compute throttle and brake commands to match a target speed while
+considering hazard conditions that may require emergency braking.
+
+The linear regression controller is used by default as it provides smoother control
+and better matches expert driving behavior. It was trained on data collected from
+expert agents driving on test tracks.
+
+Classes:
+    LongitudinalController: Base class for speed controllers
+    LongitudinalPIDController: PID-based speed control (used for ablations)
+    LongitudinalLinearRegressionController: Data-driven speed control (default)
 """
 
 import numpy as np

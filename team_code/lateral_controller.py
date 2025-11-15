@@ -1,6 +1,21 @@
-"""
-This file implements a lateral PID controller and its super class, which enables furhter lateral
-controller implementations.
+"""Lateral Control - PID Controller for Steering Angle Computation.
+
+This module implements lateral (steering) control for autonomous driving using a
+Proportional-Integral-Derivative (PID) controller. The controller computes steering
+angles by tracking a desired heading derived from future waypoints.
+
+The PID controller:
+- Proportional term: Reacts to current heading error
+- Integral term: Corrects accumulated heading error over time
+- Derivative term: Dampens oscillations by reacting to error rate of change
+
+The lookahead distance adapts to vehicle speed: higher speeds require looking
+further ahead for smoother control. Parameters are tuned via Bayesian optimization
+on test tracks for optimal performance.
+
+Classes:
+    LateralController: Base class for lateral controllers
+    LateralPIDController: PID-based implementation for steering control
 """
 
 import numpy as np

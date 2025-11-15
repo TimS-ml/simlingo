@@ -1,3 +1,25 @@
+"""LLaVA-Next vision encoder for SimLingo-Base.
+
+This module provides a LLaVA-Next based vision encoder that processes camera images
+into high-quality visual embeddings using a pretrained vision-language model.
+
+LLaVA-Next combines:
+    - CLIP vision encoder for image understanding
+    - Multi-scale image patching for high resolution
+    - Projection to language model dimension
+
+Key Features:
+    - Uses pretrained LLaVA-Next from HuggingFace
+    - Handles multi-resolution image patches
+    - Downsamples feature grids to reduce memory
+    - Adds temporal and camera positional encodings
+    - Supports global + local patch representation
+
+Dependencies:
+    - Transformers: For LLaVA-Next models
+    - LingoLlavaNextModel: Custom wrapper with image processing
+"""
+
 import numpy as np
 import torch
 from torch import nn
@@ -6,6 +28,19 @@ from transformers import LlavaNextProcessor
 from simlingo_base_training.models.encoder.llavanext_model import LingoLlavaNextModel
 
 class LLaVAnextEncoderModel(nn.Module):
+    """LLaVA-Next based vision encoder.
+
+    Encodes camera images using pretrained LLaVA-Next vision encoder with
+    multi-scale patching and optional global image representation.
+
+    Attributes:
+        image_encoder: LLaVA-Next model (language model removed, vision only).
+        projection: Linear projection to target embedding dimension.
+        temporal_encoding: Learnable temporal position embeddings.
+        camera_encoding: Learnable camera position embeddings.
+        token_size: Output embedding dimension.
+        downsample_feature_grid_factor: Spatial downsampling factor for features.
+    """
     def __init__(self,
         variant: str, 
         embed_dim: int,

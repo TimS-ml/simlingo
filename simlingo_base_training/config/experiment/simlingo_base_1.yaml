@@ -1,41 +1,63 @@
 # @package _global_
+# Production experiment configuration for SimLingo base training (Seed 1)
+# Base model training without full multimodal features
+# Optimized for multi-GPU distributed training with larger batch sizes
+
+# Hydra defaults - compose configuration
 defaults:
-  - /data_module: carla_bucket_v12
-  - /model/vision_model: llavanext
+  - /data_module: carla_bucket_v12  # Bucketed sampling for balanced training
+  - /model/vision_model: llavanext  # LLaVA-NeXT vision-language architecture
 
+# Model hyperparameters
 model:
-  lr: 3e-5
-  vision_lr: 3e-5
-  predict_route_as_wps: True
-  speed_wps_mode: '2d'
+  lr: 3e-5  # Learning rate for language model
+  vision_lr: 3e-5  # Learning rate for vision encoder (can be tuned separately)
+  predict_route_as_wps: True  # Predict waypoint sequences
+  speed_wps_mode: '2d'  # 2D waypoint coordinates
+
+  # Language model configuration
   language_model:
-    variant: tiny
-    lora: False
-    _target_: simlingo_base_training.models.language_model.llama.Llama
+    variant: tiny  # Tiny language model variant (smaller than full model)
+    lora: False  # Full fine-tuning (not using LoRA for base model)
+    _target_: simlingo_base_training.models.language_model.llama.Llama  # Model class
+
+  # Vision model configuration
   vision_model:
-    downsample_feature_grid_factor: 2
+    downsample_feature_grid_factor: 2  # Downsample vision features by 2x for efficiency
 
+# Data loading configuration
 data_module:
-  data_path: database/simlingo
-  bucket_path: database/bucketsv2_simlingo
-  batch_size: 28
-  num_workers: 10
-  route_as: target_point
-  hist_len: 1
-  cut_bottom_quarter: False
-  use_global_img: False
+  # Data paths
+  data_path: database/simlingo  # Main dataset
+  bucket_path: database/bucketsv2_simlingo  # Bucketed samples
 
-  img_shift_augmentation: True
-  
-  img_shift_augmentation_prob: 0.5
-  image_enhancing: True
+  # Data loading parameters
+  batch_size: 28  # Large batch size for multi-GPU training
+  num_workers: 10  # Parallel data loading workers
 
-max_epochs: 30
-seed: 42
-gpus: 8
-val_every_n_epochs: 2
-name: simlingo_base_seed_42
+  # Route and history
+  route_as: target_point  # Simple target point (no command, simpler than full model)
+  hist_len: 1  # Single historical frame
 
+  # Image preprocessing
+  cut_bottom_quarter: False  # Keep full image
+  use_global_img: False  # Don't use bird's-eye view
+
+  # Data augmentation
+  img_shift_augmentation: True  # Random image shifts
+  img_shift_augmentation_prob: 0.5  # Apply to 50% of samples
+  image_enhancing: True  # Brightness, contrast, saturation augmentation
+
+# Training schedule
+max_epochs: 30  # Train for more epochs (base model is simpler)
+val_every_n_epochs: 2  # Validate every 2 epochs
+
+# Hardware and reproducibility
+seed: 42  # Random seed for reproducibility
+gpus: 8  # Multi-GPU distributed training
+name: simlingo_base_seed_42  # Experiment name
+
+# Hydra output directory
 hydra:
   run:
-    dir: outputs/${wandb_name}_${name}
+    dir: outputs/${wandb_name}_${name}  # Output directory for checkpoints and logs

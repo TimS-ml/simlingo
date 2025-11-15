@@ -5,12 +5,67 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-This module provides all atomic scenario behaviors required to realize
-complex, realistic scenarios such as "follow a leading vehicle", "lane change",
-etc.
+"""Atomic Behaviors - Building blocks for scenario behavior trees.
 
-The atomic behaviors are implemented with py_trees.
+This module provides a comprehensive library of atomic (indivisible) behaviors that
+serve as the building blocks for constructing complex scenario logic. Each atomic
+behavior is implemented as a py_trees Behaviour node that can be composed into
+sequences, parallels, and other control flow structures.
+
+Atomic behaviors represent discrete actions or states such as:
+    - Actor movement and control (drive distance, change lane, follow vehicle)
+    - Actor state changes (set transform, set velocity, change autopilot)
+    - Synchronization (wait for condition, trigger on location)
+    - Traffic interactions (intersection crossing, yielding, overtaking)
+    - Scene management (add/remove actors, lights control)
+
+Behavior Tree Integration:
+    All behaviors inherit from AtomicBehavior (extends py_trees.behaviour.Behaviour)
+    and implement the standard behavior tree lifecycle:
+
+    - setup(): Initialize resources (called once before first tick)
+    - initialise(): Reset state (called each time behavior becomes active)
+    - update(): Execute one step and return status (RUNNING/SUCCESS/FAILURE)
+    - terminate(status): Cleanup (called when behavior finishes)
+
+Common Behavior Categories:
+
+    Actor Motion Control:
+        - DriveDistance: Drive forward a specified distance
+        - ChangeAutoPilot: Enable/disable CARLA autopilot
+        - WaypointFollower: Follow a sequence of waypoints
+        - KeepVelocity: Maintain constant velocity
+        - AccelerateToVelocity: Smoothly reach target velocity
+        - SetInitSpeed: Set initial velocity instantly
+
+    Actor Transforms:
+        - ActorTransformSetterToOSCPosition: Set actor to OpenSCENARIO position
+        - Idle: Actor remains stationary
+        - ActorDestroy: Destroy actor and remove from world
+
+    Traffic Behaviors:
+        - TrafficLightManipulator: Control traffic light states
+        - SyncArrival: Synchronize two actors to arrive simultaneously
+        - SteerVehicle: Apply steering angle
+        - LaneChange: Execute lane change maneuver
+
+    Waiting/Triggering:
+        - WaitForBlackboardVariable: Wait for blackboard condition
+        - InTriggerDistanceToLocation: Trigger when near location
+        - WaitEndIntersection: Wait until past intersection
+        - WaitForTrafficLightState: Wait for light to change
+
+Usage Example:
+    >>> # Build a behavior sequence
+    >>> sequence = py_trees.composites.Sequence("Overtake")
+    >>> sequence.add_child(AccelerateToVelocity(vehicle, target_speed=15))
+    >>> sequence.add_child(LaneChange(vehicle, direction='left', distance_lane_change=25))
+    >>> sequence.add_child(DriveDistance(vehicle, distance=100))
+    >>> sequence.add_child(LaneChange(vehicle, direction='right', distance_lane_change=25))
+
+Note:
+    Behaviors operate on CARLA actors and use CarlaDataProvider for cached data access.
+    Most behaviors support both vehicles and walkers with appropriate control abstractions.
 """
 
 from __future__ import print_function

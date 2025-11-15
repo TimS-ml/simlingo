@@ -1,3 +1,31 @@
+"""Dreamer Data: Kinematic Bicycle Model for Vehicle Motion Forecasting
+
+This module implements a kinematic bicycle model for simulating vehicle motion based on
+control inputs (steer, throttle, brake). The model is used to forecast future vehicle
+positions when generating action-conditioned driving instructions for the Dreamer dataset.
+
+The kinematic bicycle model:
+- Represents vehicle dynamics using simplified physics
+- Models steering, throttle, and brake effects on vehicle motion
+- Uses tuned parameters from World on Rails for realistic behavior
+- Supports both ego vehicle and other vehicle forecasting
+
+Key components:
+- Config: Model parameters (wheelbase, acceleration rates, polynomial coefficients)
+- KinematicBicycleModel: Main forecasting class with separate methods for ego and others
+
+The model uses polynomial equations to estimate speed changes:
+- Throttle: 8-coefficient polynomial based on speed and throttle input
+- Brake: 7-coefficient polynomial based on current speed
+
+Parameters are tuned from World on Rails using highway driving data.
+
+Typical usage:
+    from kinematic_bicycle_model import KinematicBicycleModel
+    model = KinematicBicycleModel(frame_rate=20)
+    next_loc, next_heading, next_speed = model.forecast_ego_vehicle(location, heading, speed, action)
+"""
+
 import numpy as np
 # from config import GlobalConfig
 

@@ -5,9 +5,60 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-This module provides all frequently used data from CARLA via
-local buffers to avoid blocking calls to CARLA
+"""CarlaDataProvider - Global singleton for cached CARLA world data.
+
+This module provides the CarlaDataProvider class, a thread-safe singleton that caches
+frequently accessed CARLA world data to avoid expensive blocking calls to the simulator.
+It serves as the central data access point for all scenarios and behaviors.
+
+The provider maintains local buffers for actor data (velocity, location, transform) and
+updates them each simulation tick. This dramatically improves performance by eliminating
+redundant CARLA API calls.
+
+Key Features:
+    - Thread-safe singleton pattern with locking
+    - Per-tick caching of actor velocity, location, and transform
+    - Actor spawning and lifecycle management
+    - Traffic light state tracking
+    - Global route planning interface
+    - Map and spawn point access
+    - Synchronous/asynchronous mode detection
+    - Traffic manager port configuration
+    - Deterministic random number generation with seed control
+
+Architecture:
+    The provider is a static class (no instances created) with class-level dictionaries:
+    - _actor_velocity_map: actor -> velocity (m/s)
+    - _actor_location_map: actor -> carla.Location
+    - _actor_transform_map: actor -> carla.Transform
+    - _traffic_light_map: landmark_id -> carla.TrafficLight
+    - _carla_actor_pool: actor_id -> actor (all spawned actors)
+
+Usage Pattern:
+    1. Initialize once: CarlaDataProvider.set_world(world)
+    2. Register actors: CarlaDataProvider.register_actor(actor)
+    3. Per-tick update: CarlaDataProvider.on_carla_tick()
+    4. Query data: CarlaDataProvider.get_velocity(actor)
+    5. Cleanup: CarlaDataProvider.cleanup()
+
+Example:
+    >>> # Setup
+    >>> CarlaDataProvider.set_world(world)
+    >>> CarlaDataProvider.set_client(client)
+    >>>
+    >>> # Spawn actor
+    >>> actor = CarlaDataProvider.request_new_actor('vehicle.tesla.model3', spawn_point)
+    >>>
+    >>> # Each tick
+    >>> CarlaDataProvider.on_carla_tick()
+    >>>
+    >>> # Query data (no blocking call to CARLA!)
+    >>> velocity = CarlaDataProvider.get_velocity(actor)
+    >>> location = CarlaDataProvider.get_location(actor)
+
+Note:
+    This is a singleton - all data is shared across scenarios. Call cleanup()
+    between scenario runs to reset state.
 """
 
 from __future__ import print_function
@@ -23,8 +74,19 @@ from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 
 def calculate_velocity(actor):
-    """
-    Method to calculate the velocity of a actor
+    """Calculate the magnitude of an actor's velocity vector in the XY plane.
+
+    Computes 2D velocity magnitude (ignoring Z component) using Pythagorean theorem.
+    This is the typical "speed" metric for vehicles on the ground.
+
+    Args:
+        actor (carla.Actor): CARLA actor with velocity property
+
+    Returns:
+        float: Velocity magnitude in meters per second (m/s)
+
+    Note:
+        Only considers X and Y velocity components. Vertical (Z) velocity is ignored.
     """
     velocity_squared = actor.get_velocity().x**2
     velocity_squared += actor.get_velocity().y**2
@@ -32,24 +94,46 @@ def calculate_velocity(actor):
 
 
 class CarlaDataProvider(object):  # pylint: disable=too-many-public-methods
+    """Thread-safe singleton providing cached access to CARLA world data.
 
+    This static class maintains local buffers of actor data (velocity, location, transform)
+    and world information (map, traffic lights, spawn points) to minimize expensive
+    blocking calls to the CARLA simulator. All data is updated each simulation tick via
+    on_carla_tick().
+
+    The provider serves as the single source of truth for:
+        - Actor state (velocity, location, transform) for registered actors
+        - Traffic light states and locations
+        - World map and spawn points
+        - Global route planning interface
+        - Actor lifecycle management (spawning, destruction, tracking)
+        - Synchronization mode detection
+        - Deterministic randomness with seed control
+
+    Thread Safety:
+        All data access is protected by a threading.Lock to enable safe concurrent access
+        from behavior tree nodes executing in parallel.
+
+    Cached Data:
+        - _actor_velocity_map: Per-actor velocity magnitude (m/s)
+        - _actor_location_map: Per-actor location (carla.Location)
+        - _actor_transform_map: Per-actor transform (carla.Transform)
+        - _traffic_light_map: Traffic light actors by landmark ID
+        - _carla_actor_pool: All spawned actors by ID
+
+    Configuration:
+        - _client: CARLA client instance
+        - _world: CARLA world instance
+        - _map: HD map (carla.Map)
+        - _sync_flag: Synchronous mode enabled
+        - _traffic_manager_port: TM port for spawned actors
+        - _random_seed: Seed for deterministic randomness
+        - _grp: GlobalRoutePlanner instance
+
+    Note:
+        This is a static class - never instantiate it. All methods are @staticmethod.
+        Call cleanup() between scenarios to reset state.
     """
-    This class provides access to various data of all registered actors
-    It buffers the data and updates it on every CARLA tick
-
-    Currently available data:
-    - Absolute velocity
-    - Location
-    - Transform
-
-    Potential additions:
-    - Acceleration
-
-    In addition it provides access to the map and the transform of all traffic lights
-    """
-    # Saves, which type of scenario is currently runninng. That's necessary since some scenarios can't be detected / distinguished.
-    # the key saves the scenario type and the value all relevant data
-    active_scenarios = []
 
     _actor_velocity_map = {}
     _actor_location_map = {}
@@ -246,6 +330,14 @@ class CarlaDataProvider(object):  # pylint: disable=too-many-public-methods
         @return the random seed.
         """
         return CarlaDataProvider._rng
+
+    @staticmethod
+    def set_random_seed(seed):
+        """
+        @return the random seed.
+        """
+        CarlaDataProvider._rng = random.RandomState(seed)
+        CarlaDataProvider._random_seed = seed
 
     @staticmethod
     def get_global_route_planner():

@@ -1,5 +1,24 @@
-"""
-Some helpful classes for planning and control for the privileged autopilot
+"""Navigation Planning and Control Utilities.
+
+This module provides planning and control components for the privileged autopilot
+agent. It includes PID controllers and route planning utilities that convert
+global navigation plans into local control commands.
+
+Key components:
+- PIDController: Generic PID controller for control tasks
+- LateralPIDController: Specialized PID for steering control with adaptive lookahead
+- RoutePlanner: Converts GPS-based global route to local waypoints for control
+- Helper classes for route command extraction and waypoint management
+
+The lateral PID controller adapts its lookahead distance based on vehicle speed,
+allowing smoother high-speed driving while maintaining precision at low speeds.
+Parameters are tuned via Bayesian optimization.
+
+Classes:
+    PIDController: General-purpose PID controller
+    LateralPIDController: Adaptive lateral control with speed-dependent lookahead
+    RoutePlanner: GPS to local coordinate route conversion and management
+    RoadOption: Enum for navigation commands (left, right, straight, etc.)
 """
 
 import math

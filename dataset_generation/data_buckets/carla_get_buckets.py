@@ -1,7 +1,37 @@
-"""
-This script generates buckets for the CARLA dataset.
-partially taken from https://github.com/autonomousvision/carla_garage/blob/main/team_code/data.py
+"""Data Buckets: Generate Training Data Buckets for CARLA Dataset
+
+This module creates categorized "buckets" of training samples based on driving scenarios
+and conditions. Bucketing enables balanced training across diverse driving situations,
+preventing models from overfitting to common scenarios while underperforming on rare ones.
+
+Buckets are defined by characteristics like:
+- Speed limits and target speeds
+- Lateral control difficulty (turning sharpness)
+- Acceleration/deceleration patterns
+- Leading objects (vehicles, pedestrians)
+- Traffic lights and stop signs
+- Junction proximity
+- Hazardous situations
+- Special scenarios (parking lanes, start from stop, etc.)
+
+The script:
+1. Loads CARLA simulation data (images, measurements, bounding boxes)
+2. Analyzes each frame to determine which buckets it belongs to
+3. Creates mappings from bucket names to lists of data sample paths
+4. Generates statistics and visualizations of bucket distributions
+5. Saves bucket assignments for use during model training
+
+Partially adapted from:
+https://github.com/autonomousvision/carla_garage/blob/main/team_code/data.py
 (MIT licence)
+
+Typical usage:
+    python carla_get_buckets.py
+
+Output:
+    - buckets_paths.pkl: Dictionary mapping bucket names to sample paths
+    - buckets_stats.json: Statistics on bucket sizes
+    - visualizations of bucket and speed distributions
 """
 
 # Standard library imports
@@ -38,8 +68,43 @@ from simlingo_base_training.utils.custom_types import DrivingExample, DrivingInp
 
 
 class CARLA_Data(Dataset):
-    """
-    Custom dataset that dynamically loads a CARLA dataset from disk.
+    """PyTorch Dataset for loading and processing CARLA simulation data with bucket assignment.
+
+    This dataset dynamically loads CARLA driving data from disk, including RGB images,
+    object bounding boxes, and vehicle measurements. During loading, each sample is
+    analyzed and assigned to appropriate data buckets based on its driving characteristics.
+
+    The dataset supports:
+    - Multi-frame temporal sequences (history + future prediction)
+    - Waypoint trajectory extraction and transformation to ego-frame
+    - Object detection data (vehicles, pedestrians, traffic lights, etc.)
+    - Comprehensive measurements (speed, acceleration, steering, etc.)
+    - Automatic bucket categorization for balanced training
+
+    Bucket assignment considers:
+    - Speed limits and target speeds
+    - Lateral control (turning)
+    - Longitudinal control (acceleration/braking)
+    - Leading objects and hazards
+    - Traffic signals and junctions
+    - Special situations (start from stop, parking, etc.)
+
+    Args:
+        batch_size (int): Batch size for data loading
+        num_workers (int): Number of worker processes for data loading
+        data_path (str): Root path to CARLA dataset
+        hist_len (int): Number of historical frames to include
+        pred_len (int): Number of future frames to predict
+        wp_dilation (int): Dilation factor for waypoint sampling
+        skip_first_n_frames (int): Skip first N frames of each route
+        num_route_points (int): Number of route points to use
+        smooth_route (bool): Whether to smooth the route
+        dense_route_planner_min_distance (float): Min distance for route planning
+        dense_route_planner_max_distance (float): Max distance for route planning
+        split (str): Dataset split name ('train', 'val', etc.)
+        bucket_name (str, optional): Specific bucket to load
+        bucket_proportion (float, optional): Proportion of bucket to use
+        bucket_path (str, optional): Path to bucket definitions
     """
 
     def __init__(self,
@@ -260,9 +325,12 @@ class CARLA_Data(Dataset):
         ##########################
         ###### data buckets ######
         ##########################
+        # Assign this sample to appropriate buckets based on driving characteristics
+        # Buckets enable balanced training across different scenario types
         data['buckets'] = []
-        remove_sample = False
+        remove_sample = False  # Flag to exclude invalid samples
 
+        # Verify that leading vehicles remain visible across frames (data quality check)
         is_affecting_in_box = True
         leading_object = current_measurement['speed_reduced_by_obj_type']
         if leading_object is not None and leading_object.split('.')[0] == 'vehicle' and current_measurement['speed_reduced_by_obj_distance'] < 10:

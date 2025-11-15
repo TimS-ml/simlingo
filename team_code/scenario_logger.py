@@ -1,5 +1,22 @@
-"""
-Creates log files during evaluation with which we can visualize failures
+"""Scenario Logger - Record Simulation States for Failure Analysis and Replay.
+
+This module implements logging functionality for CARLA driving scenarios. It records
+the simulation state at regular intervals, enabling post-hoc visualization and analysis
+of agent behavior, especially for debugging failures.
+
+The logger captures:
+- Vehicle states: position, orientation, velocity, bounding box
+- Traffic light states and positions
+- Route waypoints and bounding boxes
+- Actor (vehicle/pedestrian) trajectories
+- Ego vehicle control inputs
+
+Logged data is saved in compressed JSON format and can be replayed using the results
+parser for visual debugging. The logger uses RDP (Ramer-Douglas-Peucker) algorithm
+to simplify routes for efficient storage.
+
+Classes:
+    ScenarioLogger: Main logger class for recording simulation data
 """
 
 import os

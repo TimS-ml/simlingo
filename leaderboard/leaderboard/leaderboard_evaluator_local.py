@@ -5,10 +5,31 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-CARLA Challenge Evaluator Routes
+"""CARLA Challenge Evaluator Routes - Local Evaluation Version
 
-Provisional code to evaluate Autonomous Agents for the CARLA Autonomous Driving challenge
+This module provides the local evaluation framework for the CARLA Autonomous Driving
+Leaderboard. It is a variant of the standard leaderboard_evaluator.py with modifications
+for local/offline evaluation scenarios.
+
+Key differences from the standard evaluator:
+- Uses local versions of ScenarioManager and StatisticsManager
+- Includes automatic port detection to avoid port conflicts
+- Supports data generation mode (DATAGEN environment variable)
+- Modified agent initialization with route-specific naming
+- Enhanced cleanup handling with result passing
+
+The evaluation pipeline remains similar:
+- Setting up the CARLA simulation environment
+- Loading and configuring autonomous agents
+- Executing driving routes with scenarios
+- Managing sensors and collecting data
+- Computing performance statistics
+- Handling errors and timeouts
+
+Typical usage:
+    python leaderboard_evaluator_local.py --routes=routes.xml --agent=path/to/agent.py
+
+This version is optimized for local development and batch data collection.
 """
 from __future__ import print_function
 
@@ -36,22 +57,47 @@ from leaderboard.utils.route_indexer import RouteIndexer
 import pathlib
 
 
+# Mapping from CARLA sensor types to their icon identifiers for visualization.
+# This is used to track and display which sensors an agent is using during evaluation.
+# Extended to include data generation sensors (semantic segmentation, depth).
 sensors_to_icons = {
-    'sensor.camera.rgb':        'carla_camera',
-    'sensor.lidar.ray_cast':    'carla_lidar',
-    'sensor.other.radar':       'carla_radar',
-    'sensor.other.gnss':        'carla_gnss',
-    'sensor.other.imu':         'carla_imu',
-    'sensor.opendrive_map':     'carla_opendrive_map',
-    'sensor.speedometer':       'carla_speedometer',
-    'sensor.camera.semantic_segmentation': 'carla_camera', # for datagen
-    'sensor.camera.depth':      'carla_camera', # for datagen
+    'sensor.camera.rgb':        'carla_camera',        # RGB camera sensor
+    'sensor.lidar.ray_cast':    'carla_lidar',         # LiDAR ray-casting sensor
+    'sensor.other.radar':       'carla_radar',         # Radar sensor
+    'sensor.other.gnss':        'carla_gnss',          # GPS/GNSS sensor
+    'sensor.other.imu':         'carla_imu',           # Inertial Measurement Unit
+    'sensor.opendrive_map':     'carla_opendrive_map', # HD map in OpenDRIVE format
+    'sensor.speedometer':       'carla_speedometer',   # Vehicle speedometer
+    'sensor.camera.semantic_segmentation': 'carla_camera', # Semantic segmentation (datagen)
+    'sensor.camera.depth':      'carla_camera',        # Depth camera (datagen)
 }
 
 class LeaderboardEvaluator(object):
-    """
-    Main class of the Leaderboard. Everything is handled from here,
-    from parsing the given files, to preparing the simulation, to running the route.
+    """Main orchestrator for local CARLA Leaderboard evaluation.
+
+    This is the local evaluation version with enhanced features for development and
+    data generation. Key differences from the standard evaluator:
+
+    1. Automatic port detection: Finds free ports to avoid conflicts
+    2. Data generation support: Handles DATAGEN environment variable
+    3. Route-specific naming: Creates unique identifiers for each route run
+    4. Enhanced cleanup: Passes results to agent destroy method
+    5. Local managers: Uses local versions of Scenario and Statistics managers
+
+    The class manages the complete evaluation pipeline with the same core functionality
+    as the standard evaluator but with optimizations for batch processing and local
+    development workflows.
+
+    Attributes:
+        client_timeout (float): Maximum time in seconds for CARLA client operations
+        frame_rate (float): Simulation update frequency in Hz (20 Hz default)
+        world: CARLA world object reference
+        manager: Local ScenarioManager instance
+        sensors: Agent's sensor configuration
+        agent_instance: Instantiated autonomous agent
+        route_scenario: Current RouteScenario being executed
+        statistics_manager: Local StatisticsManager for metrics
+        traffic_manager_port: Dynamically allocated traffic manager port
     """
 
     # Tunable parameters
@@ -163,6 +209,28 @@ class LeaderboardEvaluator(object):
 
 
     def find_free_port(self, start_port=2_000, end_port=40_000):
+        """Find an available network port for the traffic manager.
+
+        Scans through a range of ports to find one that is not currently in use.
+        This is useful for running multiple evaluations in parallel or avoiding
+        conflicts with other services.
+
+        The method attempts to bind to each port in sequence. If binding succeeds,
+        the port is available and returned. If binding fails with OSError (port
+        already in use), it tries the next port.
+
+        Args:
+            start_port (int, optional): First port to try. Defaults to 2000.
+            end_port (int, optional): Last port to try. Defaults to 40000.
+
+        Returns:
+            int or None: First available port number in the range, or None if
+                        no ports are available in the entire range.
+
+        Note:
+            The socket is configured with SO_REUSEADDR to handle TIME_WAIT states.
+            This prevents issues with ports that were recently released.
+        """
         for port in range(start_port, end_port + 1):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -170,7 +238,7 @@ class LeaderboardEvaluator(object):
             try:
                 s.bind(('localhost', port))
                 return port
-            except OSError as e: # Address already in use or Address already in use (WinError)
+            except OSError as e:  # Address already in use (Linux/Windows)
                 pass
             finally:
                 s.close()
@@ -178,14 +246,35 @@ class LeaderboardEvaluator(object):
         return None
 
     def _setup_simulation(self, args):
-        """
-        Prepares the simulation by getting the client, and setting up the world and traffic manager settings
+        """Prepare and configure the CARLA simulation environment with dynamic port allocation.
+
+        Similar to the standard evaluator but with automatic port detection for the
+        traffic manager. This enables running multiple evaluation instances in parallel
+        without port conflicts.
+
+        Args:
+            args: Command-line arguments containing:
+                - host: CARLA server hostname or IP
+                - port: CARLA server port
+                - timeout: Client timeout value in seconds
+
+        Returns:
+            tuple: (client, client_timeout, traffic_manager, traffic_manager_port)
+                - client: Connected CARLA client instance
+                - client_timeout: Configured timeout value
+                - traffic_manager: Configured TrafficManager instance
+                - traffic_manager_port: Dynamically allocated port number
+
+        Note:
+            The traffic manager port is found dynamically using find_free_port(),
+            rather than using a fixed port from arguments.
         """
         client = carla.Client(args.host, args.port)
         if args.timeout:
             client_timeout = args.timeout
         client.set_timeout(client_timeout)
 
+        # Configure synchronous mode for deterministic simulation
         settings = carla.WorldSettings(
             synchronous_mode = True,
             fixed_delta_seconds = 1.0 / self.frame_rate,
@@ -194,6 +283,7 @@ class LeaderboardEvaluator(object):
         )
         client.get_world().apply_settings(settings)
 
+        # Find an available port dynamically to avoid conflicts
         traffic_manager_port = self.find_free_port()
         traffic_manager = client.get_trafficmanager(traffic_manager_port)
         traffic_manager.set_synchronous_mode(True)
@@ -299,32 +389,41 @@ class LeaderboardEvaluator(object):
 
         # Set up the user's agent, and the timer to avoid freezing the simulation
         try:
+            # Create a unique identifier for this route run with timestamp
+            # Format: <routes_filename>_route<index>_MM_DD_HH_MM_SS
             now = datetime.now()
-            # route_string = pathlib.Path(os.environ.get('ROUTES', '')).stem + '_'
             route_string = pathlib.Path(args.routes).stem + '_'
             route_string += f'route{config.index}'
             route_date_string = route_string + '_' + '_'.join(
                 map(lambda x: '%02d' % x, (now.month, now.day, now.hour, now.minute, now.second))
             )
 
+            # Start watchdog timer to detect if agent setup hangs
             self._agent_watchdog = Watchdog(args.timeout)
             self._agent_watchdog.start()
+
+            # Dynamically get the agent class name and instantiate it
             agent_class_name = getattr(self.module_agent, 'get_entry_point')()
             agent_class_obj = getattr(self.module_agent, agent_class_name)
 
             # Start the ROS1 bridge server only for ROS1 based agents.
+            # The server is shared across all routes to avoid reconnection issues.
             if getattr(agent_class_obj, 'get_ros_version')() == 1 and self._ros1_server is None:
                 from leaderboard.autoagents.ros1_agent import ROS1Server
                 self._ros1_server = ROS1Server()
                 self._ros1_server.start()
 
-            # self.agent_instance = agent_class_obj(args.host, args.port, args.debug)
+            # Create agent instance with different parameters based on mode
+            # DATAGEN mode: pass route index for data collection batches
+            # Normal mode: pass unique route identifier with timestamp
             if int(os.environ.get('DATAGEN', 0))==1:
                 self.agent_instance = agent_class_obj(args.agent_config, config.index)
             else:
                 self.agent_instance = agent_class_obj(args.agent_config, route_date_string)
 
+            # Provide the agent with the global route plan
             self.agent_instance.set_global_plan(self.route_scenario.gps_route, self.route_scenario.route)
+            # Setup agent with config, route identifier, and traffic manager reference
             self.agent_instance.setup(args.agent_config, route_date_string, self.traffic_manager)
 
             # Check and store the sensors

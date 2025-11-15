@@ -1,6 +1,28 @@
-"""
-Functionality used to store CARLA maps as h5 files.
-Code adapted from https://github.com/zhejz/carla-roach
+"""CARLA Map to HDF5 Converter - Pre-render BEV Map Layers.
+
+This module pre-renders CARLA HD maps as static BEV semantic layers and stores
+them in HDF5 files for fast loading during training/evaluation. This avoids
+expensive real-time map rendering by the CARLA server.
+
+The pre-rendered layers include:
+- Road geometry (drivable area, lanes)
+- Lane markings (solid, dashed, colors)
+- Crosswalks and sidewalks
+- Road boundaries
+
+Each map is rendered at a fixed resolution (e.g., 2 pixels per meter) covering
+the entire town. During runtime, the agent extracts relevant crops around the
+ego vehicle position.
+
+This preprocessing significantly speeds up:
+1. BEV map generation during data collection
+2. Training data loading pipeline
+3. Real-time evaluation with BEV rendering
+
+Code adapted from: https://github.com/zhejz/carla-roach
+
+Usage:
+    python birdview_map_opencv.py --town Town01 --save_path maps/
 """
 
 import carla

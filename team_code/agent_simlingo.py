@@ -1,5 +1,18 @@
-"""
-partially taken from https://github.com/autonomousvision/carla_garage/blob/leaderboard_2/team_code/sensor_agent.py
+"""SimLingo Agent - Vision-Language Model for Autonomous Driving.
+
+This module implements the main LingoAgent class for closed-loop driving evaluation in CARLA.
+The agent uses a vision-language model (InternVL2) combined with PID controllers to navigate
+through driving scenarios based on natural language commands and visual input.
+
+The agent pipeline consists of:
+1. Sensor data processing (cameras, GPS, IMU, speed)
+2. Unscented Kalman Filter for state estimation
+3. Vision-language model inference for waypoint prediction
+4. PID controllers for lateral and longitudinal control
+5. Visualization and logging for debugging
+
+Architecture is partially adapted from:
+https://github.com/autonomousvision/carla_garage/blob/leaderboard_2/team_code/sensor_agent.py
 (MIT licence)
 """
 
@@ -53,41 +66,78 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.allow_tf32 = True
 
 
-# Leaderboard function that selects the class used as agent.
 def get_entry_point():
+    """Entry point function required by CARLA leaderboard.
+
+    Returns:
+        str: Name of the agent class to be instantiated by the leaderboard.
+    """
     return 'LingoAgent'
 
 
-DEBUG = False # saves images during evaluation
-HD_VIZ = False
-USE_UKF = True
+# Debug flags for development and visualization
+DEBUG = False  # If True, saves debug images during evaluation
+HD_VIZ = False  # If True, uses high-definition camera for visualization
+USE_UKF = True  # If True, uses Unscented Kalman Filter for state estimation
 
 class LingoAgent(autonomous_agent.AutonomousAgent):
+    """Main agent class for vision-language based autonomous driving.
+
+    This agent combines a vision-language model (InternVL2) with PID controllers
+    to perform end-to-end driving in CARLA. It processes camera images and natural
+    language navigation instructions to predict waypoints, which are then converted
+    to control signals using lateral and longitudinal PID controllers.
+
+    Key components:
+        - Vision-language model: InternVL2 for waypoint prediction
+        - State estimation: Unscented Kalman Filter (UKF) for sensor fusion
+        - Control: PID controllers for steering, throttle, and braking
+        - Route planning: Global route planner for navigation
+        - Logging: Scenario logger for debugging and analysis
+
+    Attributes:
+        model: Vision-language model for waypoint prediction
+        config: Global configuration object
+        ukf: Unscented Kalman Filter for state estimation
+        turn_controller: Lateral PID controller for steering
+        speed_controller: Longitudinal PID controller for throttle/brake
     """
-        Main class that runs the agents with the run_step function
-        """
 
     def setup(self, path_to_conf_file, route_index=None):
-        """Sets up the agent. route_index is for logging purposes"""
+        """Initialize the agent with model, sensors, and controllers.
 
+        This method loads the pretrained model, sets up the route planner,
+        initializes the Unscented Kalman Filter, and prepares logging.
+
+        Args:
+            path_to_conf_file: Path to the model checkpoint file. Can include
+                '+' separator to specify save path (e.g., "model.ckpt+save/path")
+            route_index: Index of the current route for logging purposes (optional)
+        """
+
+        # Clear GPU memory and set agent track type for leaderboard
         torch.cuda.empty_cache()
         self.track = autonomous_agent.Track.SENSORS
+
+        # Parse config path - format can be "model_path+save_path" or just "model_path"
         if '+' in path_to_conf_file:
             print(f"path to conf file: {path_to_conf_file}")
-            self.config_path = path_to_conf_file.split('+')[0]
+            self.config_path = path_to_conf_file.split('+')[0]  # Model checkpoint path
             print(f"Config path: {self.config_path}")
-            self.save_path_root = path_to_conf_file.split('+')[1]
+            self.save_path_root = path_to_conf_file.split('+')[1]  # Output directory path
             print(f"Save path root: {self.save_path_root}")
         else:
             self.config_path = path_to_conf_file
             print(f"Config path: {self.config_path}")
             self.save_path_root = route_index
             print(f"Save path root: {self.save_path_root}")
-        self.step = -1
-        self.initialized = False
-        self.device = torch.device('cuda')
-        self.DrivingInput = {}
-        self.config = GlobalConfig()
+
+        # Initialize agent state
+        self.step = -1  # Current timestep (-1 means not started)
+        self.initialized = False  # Flag for late initialization after first sensor data
+        self.device = torch.device('cuda')  # Use GPU for model inference
+        self.DrivingInput = {}  # Dictionary to store model inputs
+        self.config = GlobalConfig()  # Load default configuration
 
         if self.config.eval_route_as == -1:
             self.config.eval_route_as = self.model.route_as
@@ -263,12 +313,20 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
             print(f"User flag: {self.user_flag}")
 
     def _init(self):
-        # The CARLA leaderboard does not expose the lat lon reference value of the GPS which make it impossible to use the
-        # GPS because the scale is not known. In the past this was not an issue since the reference was constant 0.0
-        # But town 13 has a different value in CARLA 0.9.15. The following code, adapted from Bench2DriveZoo estimates the
-        # lat, lon reference values by abusing the fact that the leaderboard exposes the route plan also in CARLA
-        # coordinates. The GPS plan is compared to the CARLA coordinate plan to estimate the reference point / scale
-        # of the GPS. It seems to work reasonably well, so we use this workaround for now.
+        """Late initialization called after receiving first sensor data.
+
+        This method performs initialization that requires access to the global route
+        plan, which is only available after the first sensor callback. It primarily
+        sets up the route planner with corrected GPS reference coordinates.
+
+        The CARLA leaderboard does not expose the lat/lon reference values for GPS,
+        making it impossible to use GPS directly since the scale is unknown. Prior
+        to CARLA 0.9.15, this wasn't an issue as the reference was constant (0.0, 0.0).
+        However, Town 13 has different reference values. This code, adapted from
+        Bench2DriveZoo, estimates the lat/lon reference by comparing the GPS-based
+        global plan with the CARLA coordinate-based plan to solve for the reference
+        point and scale transformation.
+        """
         try:
             locx, locy = self._global_plan_world_coord[0][0].location.x, self._global_plan_world_coord[0][0].location.y
             lon, lat = self._global_plan[0][0]['lon'], self._global_plan[0][0]['lat']
@@ -294,7 +352,18 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
         self.metric_info = {}
 
     def sensors(self):
+        """Define the sensor suite for the agent.
+
+        Configures all sensors required by the agent including RGB cameras,
+        IMU, GPS, and speedometer. Camera positions and orientations are loaded
+        from the configuration.
+
+        Returns:
+            list: List of sensor configuration dictionaries for the leaderboard.
+                Each dict specifies sensor type, position, rotation, and parameters.
+        """
         sensors = []
+        # Add RGB cameras based on configuration
         for num_cam in self.config.num_cameras:
             # get from config by name as string
             sensors += [
@@ -355,7 +424,32 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
 
     @torch.inference_mode()  # Turns off gradient computation
     def tick(self, input_data):
-        """Pre-processes sensor data and runs the Unscented Kalman Filter"""
+        """Process sensor data and prepare model inputs.
+
+        This method handles all sensor preprocessing including:
+        1. RGB image preprocessing (JPEG compression, cropping, normalization)
+        2. Vision model input preparation (dynamic preprocessing for InternVL2)
+        3. GPS/IMU fusion through Unscented Kalman Filter
+        4. Route waypoint extraction and command generation
+        5. Natural language prompt construction based on navigation commands
+
+        Args:
+            input_data: Dictionary of sensor data from CARLA containing:
+                - 'rgb_X': RGB camera images for each camera X
+                - 'gps': GPS location data
+                - 'imu': IMU orientation data
+                - 'speed': Vehicle speed measurement
+
+        Returns:
+            dict: Processed sensor data including:
+                - 'rgb': Preprocessed RGB images
+                - 'gps': Filtered GPS position from UKF
+                - 'compass': Vehicle orientation
+                - 'speed': Current speed
+                - 'command': One-hot encoded navigation command
+                - 'target_point': Target waypoint in ego-vehicle coordinates
+                - 'route': Route waypoints for model input
+        """
         rgb = []
 
         if HD_VIZ:
@@ -667,6 +761,25 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
 
     @torch.no_grad()
     def run_step(self, input_data, timestamp, sensors=None):  # pylint: disable=locally-disabled, unused-argument
+        """Main control loop - called at each simulation timestep.
+
+        This is the main entry point called by the CARLA leaderboard at each timestep.
+        It orchestrates the full perception-planning-control pipeline:
+        1. Initialize on first call
+        2. Process sensor data (tick)
+        3. Run vision-language model for waypoint prediction
+        4. Convert waypoints to control commands via PID
+        5. Apply safety mechanisms (stuck detection, creep controller)
+        6. Log metrics and visualizations
+
+        Args:
+            input_data: Dictionary of sensor readings from CARLA
+            timestamp: Current simulation timestamp
+            sensors: Sensor configuration (unused, for compatibility)
+
+        Returns:
+            carla.VehicleControl: Control command with steering, throttle, brake
+        """
         self.step += 1
 
         if not self.initialized:
@@ -800,16 +913,34 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
         return control
 
     def control_pid(self, route_waypoints, velocity, speed_waypoints):
-        """
-        Predicts vehicle control with a PID controller.
-        Used for waypoint predictions
+        """Convert predicted waypoints to vehicle control using PID controllers.
+
+        This method implements the low-level control that converts model predictions
+        into steering, throttle, and brake commands. It uses two PID controllers:
+        1. Lateral controller: Follows interpolated waypoints for steering
+        2. Longitudinal controller: Maintains target speed derived from waypoint spacing
+
+        The target speed is estimated from waypoint spacing: if waypoints are closer
+        together, the vehicle should drive slower.
+
+        Args:
+            route_waypoints: Predicted route waypoints tensor [1, N, 2] in ego coords
+            velocity: Current vehicle velocity tensor [1]
+            speed_waypoints: Predicted speed waypoints tensor [1, N, 2]
+
+        Returns:
+            tuple: (steer, throttle, brake) control values
+                - steer: float in [-1, 1] for steering angle
+                - throttle: float in [0, 1] for acceleration
+                - brake: bool indicating if brake should be applied
         """
         assert route_waypoints.size(0) == 1
         route_waypoints = route_waypoints[0].data.cpu().numpy()
         speed = velocity[0].data.cpu().numpy()
         speed_waypoints = speed_waypoints[0].data.cpu().numpy()
 
-        # m / s required to drive
+        # Compute target speed from waypoint spacing
+        # m/s required is estimated from distance covered in 0.5 seconds
         one_second = int(self.config.carla_fps // (self.config.wp_dilation * self.config.data_save_freq))
         half_second = one_second // 2
         desired_speed = np.linalg.norm(speed_waypoints[half_second - 2] - speed_waypoints[one_second - 2]) * 2.0
@@ -830,30 +961,46 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
 
         return steer, throttle, brake
     
-    # In: Waypoints NxD
-    # Out: Waypoints NxD equally spaced 0.1 across D
     def interpolate_waypoints(self, waypoints):
-            waypoints = waypoints.copy()
-            waypoints = np.concatenate((np.zeros_like(waypoints[:1]), waypoints))
-            shift = np.roll(waypoints, 1, axis=0)
-            shift[0] = shift[1]
+        """Interpolate waypoints to create evenly spaced points for lateral control.
 
-            dists = np.linalg.norm(waypoints-shift, axis=1)
-            dists = np.cumsum(dists)
-            dists += np.arange(0, len(dists)) * 1e-4 # Prevents dists not being strictly increasing
+        The lateral PID controller works best with evenly spaced waypoints. This
+        method uses monotonic cubic spline interpolation (PCHIP) to create waypoints
+        spaced 0.1 meters apart along the path.
 
-            interp = PchipInterpolator(dists, waypoints, axis=0)
+        Args:
+            waypoints: Array of shape [N, D] containing N waypoints with D dimensions
 
-            x = np.arange(0.1, dists[-1], 0.1)
+        Returns:
+            np.ndarray: Interpolated waypoints spaced 0.1m apart along the path.
+                Shape is [M, D] where M depends on the total path length.
+        """
+        waypoints = waypoints.copy()
+        # Add origin point at start for interpolation
+        waypoints = np.concatenate((np.zeros_like(waypoints[:1]), waypoints))
+        shift = np.roll(waypoints, 1, axis=0)
+        shift[0] = shift[1]
 
-            interp_points = interp(x)
+        # Compute cumulative distance along path
+        dists = np.linalg.norm(waypoints-shift, axis=1)
+        dists = np.cumsum(dists)
+        # Add tiny offset to ensure strictly increasing distances (required by interpolator)
+        dists += np.arange(0, len(dists)) * 1e-4
 
-            # There is a possibility that all points are at 0, meaning there is no point distanced 0.1
-            # In this case we output the last (assumed to be furthest) waypoint.
-            if interp_points.shape[0] == 0:
-                    interp_points = waypoints[None, -1]
+        # Use monotonic cubic spline interpolation
+        interp = PchipInterpolator(dists, waypoints, axis=0)
 
-            return interp_points
+        # Sample points every 0.1 meters
+        x = np.arange(0.1, dists[-1], 0.1)
+
+        interp_points = interp(x)
+
+        # Handle edge case where all waypoints are at origin
+        # In this case, return the last waypoint as fallback
+        if interp_points.shape[0] == 0:
+                interp_points = waypoints[None, -1]
+
+        return interp_points
     
     def destroy(self, results=None):  # pylint: disable=locally-disabled, unused-argument
         """
@@ -868,16 +1015,39 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
             del self.processor
 
 
-# Filter Functions
-def bicycle_model_forward(x, dt, steer, throttle, brake):
-    # Kinematic bicycle model.
-    # Numbers are the tuned parameters from World on Rails
-    front_wb = -0.090769015
-    rear_wb = 1.4178275
+# ============================================================================
+# Unscented Kalman Filter (UKF) Helper Functions
+# ============================================================================
+# These functions are used by the UKF for state estimation, fusing noisy
+# GPS, IMU, and speed measurements to estimate the vehicle's true state.
 
-    steer_gain = 0.36848336
-    brake_accel = -4.952399
-    throt_accel = 0.5633837
+def bicycle_model_forward(x, dt, steer, throttle, brake):
+    """State transition function for UKF using kinematic bicycle model.
+
+    Predicts the next vehicle state based on the current state and control inputs
+    using a simplified kinematic bicycle model. This is used by the UKF for the
+    prediction step.
+
+    The bicycle model approximates the vehicle as a bicycle with front and rear
+    wheels, capturing the basic kinematics without modeling complex dynamics.
+
+    Args:
+        x: Current state vector [x_pos, y_pos, yaw, speed]
+        dt: Time step in seconds
+        steer: Steering input in [-1, 1]
+        throttle: Throttle input in [0, 1]
+        brake: Boolean indicating if brake is applied
+
+    Returns:
+        np.ndarray: Predicted next state [x_pos, y_pos, yaw, speed]
+    """
+    # Kinematic bicycle model parameters (tuned from World on Rails)
+    front_wb = -0.090769015  # Distance from rear axle to front axle
+    rear_wb = 1.4178275  # Wheelbase length
+
+    steer_gain = 0.36848336  # Steering angle to wheel angle conversion
+    brake_accel = -4.952399  # Deceleration when braking (m/s^2)
+    throt_accel = 0.5633837  # Acceleration when throttling (m/s^2)
 
     locs_0 = x[0]
     locs_1 = x[1]
@@ -904,43 +1074,62 @@ def bicycle_model_forward(x, dt, steer, throttle, brake):
 
 
 def measurement_function_hx(vehicle_state):
-    '''
-        For now we use the same internal state as the measurement state
-        :param vehicle_state: VehicleState vehicle state variable containing
-                                                    an internal state of the vehicle from the filter
-        :return: np array: describes the vehicle state as numpy array.
-                                             0: pos_x, 1: pos_y, 2: rotatoion, 3: speed
-        '''
+    """Measurement function for UKF (identity mapping).
+
+    Maps the internal state to the measurement space. In this case, the
+    measurement space is identical to the state space (GPS gives position,
+    IMU gives orientation, speedometer gives speed).
+
+    Args:
+        vehicle_state: State vector [x_pos, y_pos, yaw, speed]
+
+    Returns:
+        np.ndarray: Measurement prediction (same as state) [x_pos, y_pos, yaw, speed]
+    """
     return vehicle_state
 
 
 def state_mean(state, wm):
-    '''
-        We use the arctan of the average of sin and cos of the angle to calculate
-        the average of orientations.
-        :param state: array of states to be averaged. First index is the timestep.
-        :param wm:
-        :return:
-        '''
+    """Compute weighted mean of state sigma points for UKF.
+
+    Calculates the weighted average of sigma points during the unscented
+    transform. Special handling for angles using atan2 to avoid discontinuities
+    at +/-pi boundary.
+
+    Args:
+        state: Array of sigma points, shape [N, 4] where N is number of sigma points
+        wm: Weight vector for mean calculation, shape [N]
+
+    Returns:
+        np.ndarray: Weighted mean state [x_pos, y_pos, yaw, speed]
+    """
     x = np.zeros(4)
+    # Use circular mean for yaw angle to handle wraparound
     sum_sin = np.sum(np.dot(np.sin(state[:, 2]), wm))
     sum_cos = np.sum(np.dot(np.cos(state[:, 2]), wm))
-    x[0] = np.sum(np.dot(state[:, 0], wm))
-    x[1] = np.sum(np.dot(state[:, 1], wm))
-    x[2] = math.atan2(sum_sin, sum_cos)
-    x[3] = np.sum(np.dot(state[:, 3], wm))
+    x[0] = np.sum(np.dot(state[:, 0], wm))  # x position
+    x[1] = np.sum(np.dot(state[:, 1], wm))  # y position
+    x[2] = math.atan2(sum_sin, sum_cos)  # yaw angle
+    x[3] = np.sum(np.dot(state[:, 3], wm))  # speed
 
     return x
 
 
 def measurement_mean(state, wm):
-    '''
-    We use the arctan of the average of sin and cos of the angle to
-    calculate the average of orientations.
-    :param state: array of states to be averaged. First index is the
-    timestep.
-    '''
+    """Compute weighted mean of measurement sigma points for UKF.
+
+    Calculates the weighted average of measurement sigma points. Uses circular
+    mean for angle to avoid discontinuities.
+
+    Args:
+        state: Array of measurement sigma points, shape [N, 4]
+        wm: Weight vector for mean calculation, shape [N]
+
+    Returns:
+        np.ndarray: Weighted mean measurement [x_pos, y_pos, yaw, speed]
+    """
     x = np.zeros(4)
+    # Use circular mean for yaw angle
     sum_sin = np.sum(np.dot(np.sin(state[:, 2]), wm))
     sum_cos = np.sum(np.dot(np.cos(state[:, 2]), wm))
     x[0] = np.sum(np.dot(state[:, 0], wm))
@@ -952,12 +1141,30 @@ def measurement_mean(state, wm):
 
 
 def residual_state_x(a, b):
+    """Compute state residual with angle normalization for UKF.
+
+    Args:
+        a: First state vector [x_pos, y_pos, yaw, speed]
+        b: Second state vector [x_pos, y_pos, yaw, speed]
+
+    Returns:
+        np.ndarray: Residual with normalized angle difference
+    """
     y = a - b
-    y[2] = t_u.normalize_angle(y[2])
+    y[2] = t_u.normalize_angle(y[2])  # Normalize angle to [-pi, pi]
     return y
 
 
 def residual_measurement_h(a, b):
+    """Compute measurement residual with angle normalization for UKF.
+
+    Args:
+        a: First measurement vector [x_pos, y_pos, yaw, speed]
+        b: Second measurement vector [x_pos, y_pos, yaw, speed]
+
+    Returns:
+        np.ndarray: Residual with normalized angle difference
+    """
     y = a - b
-    y[2] = t_u.normalize_angle(y[2])
+    y[2] = t_u.normalize_angle(y[2])  # Normalize angle to [-pi, pi]
     return y

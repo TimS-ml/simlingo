@@ -1,6 +1,28 @@
-"""
-This script is used to precompute the maps for the speed limits in CARLA.
-You have to start the CARLA simulator before executing this script.
+"""Speed Limit Map Pre-computation for CARLA Towns.
+
+This script pre-computes and caches speed limit information for all waypoints
+in CARLA maps. Speed limits are stored in lookup tables for fast runtime access
+by the privileged autopilot agent.
+
+The script:
+1. Generates dense waypoint grid covering all drivable areas (1m spacing)
+2. Queries CARLA landmarks to find speed limit signs
+3. Associates each waypoint with its corresponding speed limit
+4. Saves the speed limit map to disk for fast loading
+
+Speed limit maps enable:
+- Realistic expert agent behavior (respecting speed limits)
+- Target speed computation for longitudinal control
+- Data collection with speed-aware navigation
+
+The pre-computation is necessary because real-time speed limit queries to the
+CARLA server are slow. Pre-cached maps provide instant lookup during driving.
+
+Prerequisites:
+    CARLA simulator must be running before executing this script.
+
+Usage:
+    python compute_speed_limits.py --port 2000 --map Town01
 """
 
 import carla

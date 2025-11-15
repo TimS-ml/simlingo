@@ -1,3 +1,21 @@
+"""Logging and experiment tracking utilities.
+
+This module provides functions for setting up logging infrastructure and
+tracking experiment metadata during training.
+
+Key Functions:
+    - setup_logging: Initialize logging and save experiment metadata
+    - sync_wandb: Sync offline W&B runs to cloud (experimental)
+
+The logging setup captures:
+    - Training configuration (Hydra config)
+    - Git state (commit, branch, diff)
+    - Timestamp and run information
+    - Python logging configuration
+
+This helps with experiment reproducibility and debugging.
+"""
+
 import json
 import os
 import glob
@@ -14,6 +32,24 @@ from hydra.utils import get_original_cwd, to_absolute_path
 
 
 def setup_logging(cfg, save_folder=None):
+    """Set up logging infrastructure and save experiment metadata.
+
+    Creates log directory, saves configuration, captures git state, and
+    configures Python logging.
+
+    Args:
+        cfg: Hydra configuration object.
+        save_folder: Optional custom save folder (defaults to 'log').
+
+    Returns:
+        None
+
+    Side Effects:
+        - Creates log directory
+        - Writes args.txt with configuration
+        - Writes git_info.txt with repository state
+        - Configures Python logging module
+    """
     
     if save_folder is None:
         working_dir = get_original_cwd()

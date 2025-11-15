@@ -5,8 +5,40 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-This module provide BasicScenario, the basic class of all the scenarios.
+"""BasicScenario - Base class for all scenario implementations.
+
+This module provides the BasicScenario class, which serves as the foundation for all
+scenario definitions in the scenario runner framework. It handles the common scenario
+structure via py_trees behavior trees.
+
+A scenario is defined as a behavior tree with the following structure:
+    Parallel (SUCCESS_ON_ONE policy)
+    ├── Lights behavior (optional)
+    ├── Weather behavior (optional)
+    ├── Main scenario behavior sequence
+    │   ├── Trigger condition (wait for ego to reach starting point)
+    │   ├── User-defined scenario behavior (implemented in subclass)
+    │   └── End condition (signal completion in route mode)
+    ├── Criteria tree (success/failure evaluation)
+    ├── Timeout node (scenario deadline)
+    └── UpdateAllActorControls (apply physics updates)
+
+Key Concepts:
+    - Behavior Trees: Hierarchical trees of actions, conditions, and control flow nodes
+    - Criteria: Success/failure conditions evaluated in parallel with scenario execution
+    - Trigger/End: Synchronization points for route-based scenario sequences
+    - Timeout: Maximum allowed duration for scenario execution
+
+Classes:
+    BasicScenario: Abstract base class for all scenario implementations
+
+Usage:
+    Subclass BasicScenario and implement:
+    - _create_behavior(): Define scenario action sequence
+    - _create_test_criteria(): Define evaluation criteria
+    - _initialize_actors() (optional): Custom actor setup
+    - _create_weather_behavior() (optional): Dynamic weather changes
+    - _create_lights_behavior() (optional): Street light control
 """
 
 from __future__ import print_function
@@ -26,16 +58,70 @@ from srunner.scenariomanager.scenarioatomics.atomic_criteria import Criterion
 
 
 class BasicScenario(object):
+    """Abstract base class for all scenario implementations.
 
-    """
-    Base class for user-defined scenario
+    BasicScenario provides the common infrastructure for scenario definition via
+    py_trees behavior trees. It handles environment setup, actor initialization,
+    behavior tree construction, criteria integration, and resource management.
+
+    Subclasses must implement:
+        _create_behavior(): Returns py_trees behavior defining scenario actions
+        _create_test_criteria(): Returns list of Criterion objects or composite tree
+
+    Optionally override:
+        _initialize_actors(config): Custom actor spawning logic
+        _initialize_environment(world): Custom weather/friction setup
+        _create_weather_behavior(): Dynamic weather changes during scenario
+        _create_lights_behavior(): Street light control during scenario
+        _setup_scenario_trigger(config): Custom trigger conditions
+        _setup_scenario_end(config): Custom end conditions
+        _create_timeout_behavior(): Custom timeout behavior
+
+    Attributes:
+        name (str): Scenario identifier
+        ego_vehicles (list): Ego vehicle actors
+        other_actors (list): Scenario-spawned actors
+        config: Scenario configuration from XML or route file
+        world (carla.World): CARLA world instance
+        scenario_tree: Root of complete behavior tree (parallel composite)
+        behavior_tree: Main scenario behavior sequence
+        criteria_tree: Criteria evaluation tree (parallel composite)
+        timeout_node: Timeout behavior node
+        route_mode (bool): True if scenario is part of a route sequence
+
+    Example Subclass:
+        >>> class MyScenario(BasicScenario):
+        ...     def _create_behavior(self):
+        ...         return py_trees.composites.Sequence([
+        ...             ActorTransformSetter(self.other_actors[0], transform),
+        ...             WaitUntilInFront(self.ego_vehicles[0], self.other_actors[0])
+        ...         ])
+        ...
+        ...     def _create_test_criteria(self):
+        ...         return [CollisionTest(self.ego_vehicles[0])]
     """
 
     def __init__(self, name, ego_vehicles, config, world,
                  debug_mode=False, terminate_on_failure=False, criteria_enable=False):
-        """
-        Setup all relevant parameters and create scenario
-        and instantiate scenario manager
+        """Initialize the scenario with behavior tree construction.
+
+        Sets up environment (weather, friction), initializes actors, constructs the
+        behavior tree structure, integrates criteria, and prepares for execution.
+
+        Args:
+            name (str): Scenario identifier
+            ego_vehicles (list): List of ego vehicle actors
+            config: Scenario configuration with trigger_points, route, weather, friction, etc.
+            world (carla.World): CARLA world instance
+            debug_mode (bool): If True, enables py_trees debug logging
+            terminate_on_failure (bool): If True, scenario stops on first criterion failure
+            criteria_enable (bool): If True, creates and evaluates criteria tree
+
+        Note:
+            - Automatically calls _initialize_environment() and _initialize_actors()
+            - Constructs complete behavior tree via template method pattern
+            - Default timeout is 60 seconds if not set in subclass
+            - In route mode, trigger/end conditions synchronize with route execution
         """
         self.name = name
         self.ego_vehicles = ego_vehicles
@@ -51,18 +137,20 @@ class BasicScenario(object):
         self.behavior_tree = None
         self.criteria_tree = None
 
-        # If no timeout was provided, set it to 60 seconds
+        # Set default timeout if not specified by subclass
         if not hasattr(self, 'timeout'):
-            self.timeout = 60 
+            self.timeout = 60
         if debug_mode:
             py_trees.logging.level = py_trees.logging.Level.DEBUG
 
+        # Initialize environment (weather, friction) unless in route mode
         if not self.route_mode:
-            # Only init env for route mode, avoid duplicate initialization during runtime
             self._initialize_environment(world)
-            
+
+        # Spawn scenario actors
         self._initialize_actors(config)
 
+        # Synchronize world state
         if CarlaDataProvider.is_runtime_init_mode():
             world.wait_for_tick()
         elif CarlaDataProvider.is_sync_mode():
@@ -70,46 +158,49 @@ class BasicScenario(object):
         else:
             world.wait_for_tick()
 
-        # Main scenario tree
+        # Build main scenario tree (parallel: first child to succeed terminates)
         self.scenario_tree = py_trees.composites.Parallel(name, policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ONE)
 
-        # Add a trigger and end condition to the behavior to ensure it is only activated when it is relevant
+        # Build main behavior sequence with trigger/scenario/end
         self.behavior_tree = py_trees.composites.Sequence()
 
+        # Add trigger condition (wait for ego to reach start or route variable)
         trigger_behavior = self._setup_scenario_trigger(config)
         if trigger_behavior:
             self.behavior_tree.add_child(trigger_behavior)
 
+        # Add user-defined scenario behavior (implemented by subclass)
         scenario_behavior = self._create_behavior()
         self.behavior_tree.add_child(scenario_behavior)
         self.behavior_tree.name = scenario_behavior.name
 
+        # Add end condition (reset route variable and wait forever)
         end_behavior = self._setup_scenario_end(config)
         if end_behavior:
             self.behavior_tree.add_child(end_behavior)
 
-        # Create the lights behavior
+        # Add optional lights behavior
         lights = self._create_lights_behavior()
         if lights:
             self.scenario_tree.add_child(lights)
 
-        # Create the weather behavior
+        # Add optional weather behavior
         weather = self._create_weather_behavior()
         if weather:
             self.scenario_tree.add_child(weather)
 
-        # And then add it to the main tree
+        # Add main behavior sequence to tree
         self.scenario_tree.add_child(self.behavior_tree)
 
-        # Create the criteria tree (if needed)
+        # Build criteria tree if enabled
         if self.criteria_enable:
             criteria = self._create_test_criteria()
 
-            # All the work is done, thanks!
+            # Criteria returned as pre-built composite tree
             if isinstance(criteria, py_trees.composites.Composite):
                 self.criteria_tree = criteria
 
-            # Lazy mode, but its okay, we'll create the parallel behavior tree for you.
+            # Criteria returned as list - wrap in parallel composite
             elif isinstance(criteria, list):
                 for criterion in criteria:
                     criterion.terminate_on_failure = terminate_on_failure
@@ -125,14 +216,15 @@ class BasicScenario(object):
 
             self.scenario_tree.add_child(self.criteria_tree)
 
-        # Create the timeout behavior
+        # Add timeout node (scenario deadline)
         self.timeout_node = self._create_timeout_behavior()
         if self.timeout_node:
             self.scenario_tree.add_child(self.timeout_node)
 
-        # Add other nodes
+        # Add actor control update node
         self.scenario_tree.add_child(UpdateAllActorControls())
 
+        # Setup behavior tree (initializes all nodes)
         self.scenario_tree.setup(timeout=1)
 
     def _initialize_environment(self, world):
@@ -209,17 +301,51 @@ class BasicScenario(object):
         return end_sequence
 
     def _create_behavior(self):
-        """
-        Pure virtual function to setup user-defined scenario behavior
+        """Create and return the scenario behavior tree.
+
+        This abstract method must be implemented by all scenario subclasses.
+        It defines the sequence of actions, conditions, and control flow that
+        constitute the scenario's behavior.
+
+        Returns:
+            py_trees.behaviour.Behaviour: Root node of scenario behavior (often
+                a Sequence or Parallel composite containing atomic behaviors)
+
+        Example:
+            >>> def _create_behavior(self):
+            ...     sequence = py_trees.composites.Sequence("MyScenario")
+            ...     sequence.add_child(ActorTransformSetter(...))
+            ...     sequence.add_child(DriveDistance(...))
+            ...     return sequence
+
+        Raises:
+            NotImplementedError: If subclass does not implement this method
         """
         raise NotImplementedError(
             "This function is re-implemented by all scenarios"
             "If this error becomes visible the class hierarchy is somehow broken")
 
     def _create_test_criteria(self):
-        """
-        Pure virtual function to setup user-defined evaluation criteria for the
-        scenario
+        """Create and return scenario evaluation criteria.
+
+        This abstract method must be implemented by all scenario subclasses.
+        It defines the success/failure conditions that determine if the ego
+        vehicle passed the scenario.
+
+        Returns:
+            list or py_trees.composites.Composite: Either a list of Criterion
+                objects or a pre-built composite tree of criteria
+
+        Example:
+            >>> def _create_test_criteria(self):
+            ...     return [
+            ...         CollisionTest(self.ego_vehicles[0]),
+            ...         DrivenDistanceTest(self.ego_vehicles[0], 100),
+            ...         ReachedRegionTest(self.ego_vehicles[0], region)
+            ...     ]
+
+        Raises:
+            NotImplementedError: If subclass does not implement this method
         """
         raise NotImplementedError(
             "This function is re-implemented by all scenarios"

@@ -1,3 +1,28 @@
+"""PyTorch Lightning DataModule for SimLingo-Base training.
+
+This module provides a LightningDataModule that handles all data loading logic
+for training, validation, and prediction. It creates dataloaders, handles batch
+collation, and prepares data for the model.
+
+Key Features:
+    - Creates train/val/predict dataloaders
+    - Handles weighted sampling across data buckets
+    - Processes images through vision encoder processors
+    - Collates batches into structured DrivingExample objects
+    - Supports both LLaVA-Next and ResNet vision encoders
+
+The DataModule orchestrates:
+    - Dataset instantiation with proper splits
+    - Tokenizer/processor initialization for encoders
+    - Batch collation with camera intrinsics/extrinsics
+    - Weighted random sampling for balanced training
+
+Dependencies:
+    - PyTorch Lightning: DataModule framework
+    - Transformers: Vision encoder processors
+    - CARLA_Data: Underlying dataset class
+"""
+
 import itertools
 from typing import List
 
@@ -15,6 +40,21 @@ from simlingo_base_training.utils.projection import get_camera_intrinsics, get_c
 
 
 def encode_uint8(strings: List[str], common_length: int) -> torch.Tensor:
+    """Encode a list of strings as fixed-length uint8 tensors.
+
+    Converts variable-length strings to fixed-size byte tensors for batching.
+    Strings are padded with null bytes to reach common_length.
+
+    Args:
+        strings: List of strings to encode.
+        common_length: Fixed length for all encoded strings.
+
+    Returns:
+        torch.Tensor: Uint8 tensor of shape [len(strings), common_length].
+
+    Raises:
+        AssertionError: If any string exceeds common_length.
+    """
     max_len = max(len(s) for s in strings)
     assert max_len <= common_length, f"String is too long: {max_len} > {common_length}"
     padded_strings = [s.ljust(common_length, '\0') for s in strings]
@@ -22,6 +62,22 @@ def encode_uint8(strings: List[str], common_length: int) -> torch.Tensor:
 
 
 class DataModule(LightningDataModule):
+    """PyTorch Lightning DataModule for driving model training.
+
+    Manages all aspects of data loading including dataset creation, dataloader
+    configuration, and batch processing. Supports weighted sampling across
+    different scenario buckets for balanced training.
+
+    Attributes:
+        batch_size: Number of examples per batch.
+        num_workers: Number of dataloader worker processes.
+        processor: Vision encoder processor (LlavaNextProcessor or None for ResNet).
+        llm_tokenizer: Language model tokenizer.
+        train_dataset: Training dataset.
+        val_dataset: Validation dataset.
+        predict_dataset: Prediction dataset.
+        sampler_train: Weighted sampler for training data.
+    """
     def __init__(
         self,
         **cfg

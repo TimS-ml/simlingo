@@ -1,47 +1,74 @@
 # @package _global_
+# Debug experiment configuration for SimLingo training
+# Optimized for quick iteration and testing on a single GPU with minimal resources
+
+# Hydra defaults - compose configuration from multiple sources
 defaults:
-  - /data_module: carla_no_buckets #carla_no_buckets #carla_bucket_v12
-  - /model/vision_model: vlm 
-  - /data_module/base_dataset: dataset
+  - /data_module: carla_no_buckets  # Data loading config (no bucketing for simpler debugging)
+  - /model/vision_model: vlm  # Vision-language model architecture
+  - /data_module/base_dataset: dataset  # Base dataset configuration
 
+# Model hyperparameters
 model:
-  lr: 3e-5
-  predict_route_as_wps: True
-  speed_wps_mode: 2d
+  lr: 3e-5  # Learning rate for model training
+  predict_route_as_wps: True  # Predict route as waypoints (not just target point)
+  speed_wps_mode: 2d  # Waypoint representation: 2D (x, y) coordinates
+
+  # Language model configuration
   language_model:
-    variant: 'OpenGVLab/InternVL2-1B'
-    lora: True
-    lora_alpha: 64
-    lora_r: 32
-    lora_dropout: 0.1
+    variant: 'OpenGVLab/InternVL2-1B'  # InternVL2 1B parameter model from Hugging Face
+    lora: True  # Use LoRA (Low-Rank Adaptation) for parameter-efficient fine-tuning
+    lora_alpha: 64  # LoRA scaling factor
+    lora_r: 32  # LoRA rank (dimensionality of low-rank matrices)
+    lora_dropout: 0.1  # Dropout rate for LoRA layers
+
+  # Vision model configuration
   vision_model:
-    variant: 'OpenGVLab/InternVL2-1B'
+    variant: 'OpenGVLab/InternVL2-1B'  # Same model variant for vision backbone
 
+# Data loading and augmentation settings
 data_module:
-  batch_size: 2
-  num_workers: 0
-  # dreamer_dataset: null
+  batch_size: 2  # Small batch size for debugging (fits in limited GPU memory)
+  num_workers: 0  # No parallel data loading workers (easier debugging)
+  # dreamer_dataset: null  # Optional: world model dataset (disabled for debug)
+
   base_dataset:
-    data_path: database/simlingo
-    bucket_path: database/bucketsv2_simlingo
-    pred_len: 11
-    cut_bottom_quarter: True
-    use_commentary: True
-    use_qa: True
-    qa_augmentation: True
-    img_shift_augmentation: True
-    img_shift_augmentation_prob: 0.5
-    hist_len: 1
-    route_as: target_point_command
-    use_lmdrive_commands: True
-    use_old_towns: True
-    use_town13: True
+    # Data paths
+    data_path: database/simlingo  # Path to main SimLingo dataset
+    bucket_path: database/bucketsv2_simlingo  # Path to bucketed data for balanced sampling
 
-    use_safety_flag: True
+    # Sequence parameters
+    pred_len: 11  # Number of future waypoints to predict
+    hist_len: 1  # Number of historical frames to use as input
 
-max_epochs: 15
-val_every_n_epochs: 1
+    # Image preprocessing
+    cut_bottom_quarter: True  # Remove bottom quarter of image (typically shows car hood)
 
-gpus: 1
-seed: 42
-name: debug
+    # Language and QA features
+    use_commentary: True  # Include driving commentary text
+    use_qa: True  # Include question-answering pairs
+    qa_augmentation: True  # Apply data augmentation to QA pairs
+
+    # Image augmentation
+    img_shift_augmentation: True  # Apply random image shifts for robustness
+    img_shift_augmentation_prob: 0.5  # Probability of applying shift augmentation
+
+    # Route representation
+    route_as: target_point_command  # Represent route as target point with command
+    use_lmdrive_commands: True  # Use LMDrive-style navigation commands
+
+    # Town/map selection
+    use_old_towns: True  # Include older CARLA town maps
+    use_town13: True  # Include Town13 in training data
+
+    # Safety features
+    use_safety_flag: True  # Include safety violation flags in training
+
+# Training schedule
+max_epochs: 15  # Maximum number of training epochs
+val_every_n_epochs: 1  # Run validation every N epochs (frequent for debugging)
+
+# Hardware and reproducibility
+gpus: 1  # Number of GPUs to use (single GPU for debug)
+seed: 42  # Random seed for reproducibility
+name: debug  # Experiment name (used for logging and checkpoints)

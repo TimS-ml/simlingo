@@ -1,3 +1,32 @@
+"""Llama language model backbone for SimLingo-Base.
+
+This module provides configurable Llama models as the reasoning backbone for
+the driving model. Uses smaller Llama variants for efficient training.
+
+Key Features:
+    - Multiple size variants (debug, tiny, x-small, small, medium, large)
+    - Custom configurations optimized for driving tasks
+    - Optional LoRA for parameter-efficient fine-tuning
+    - Autoregressive sampling capabilities
+
+The Llama model processes concatenated embeddings from:
+    - Vision encoder (camera images)
+    - Route encoder (navigation targets)
+    - Speed encoder (current velocity)
+    - Query embeddings (prediction targets)
+
+And outputs hidden states that are decoded into waypoint predictions.
+
+Differences from Full SimLingo:
+    - Uses smaller models (x-small, tiny) for base training
+    - No text embedding layer (vision-only input)
+    - Focused on feature extraction not text generation
+
+Dependencies:
+    - Transformers: Llama model implementation
+    - PyTorch: Neural network framework
+"""
+
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
@@ -6,6 +35,11 @@ from typing import Any, Dict, Optional, Tuple
 
 
 CONFIGS: Dict[str, Dict[str, Any]] = {
+    """Predefined Llama model configurations.
+
+    Configurations range from debug (tiny for testing) to large (1B+ parameters).
+    Base training typically uses 'tiny' or 'x-small' variants.
+    """
     "debug": dict(num_hidden_layers=2, num_attention_heads=2, hidden_size=32, intermediate_size=64),
     "legacy-tiny": dict(num_hidden_layers=8, num_attention_heads=16, hidden_size=2048, intermediate_size=4096),
     # -- auto-regressive driving models --

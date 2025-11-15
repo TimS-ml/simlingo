@@ -5,9 +5,30 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-This module provides the ScenarioManager implementations.
-It must not be modified and is for reference only!
+"""Scenario execution manager for CARLA Leaderboard routes.
+
+This module provides the ScenarioManager class, which orchestrates the execution of
+driving scenarios. It handles the tick-by-tick simulation loop, coordinates between
+the agent and the scenario tree, and manages timing/watchdog constraints.
+
+Key Responsibilities:
+    - Loading and initializing scenarios with agent wrappers
+    - Running the main simulation tick loop (calling agent + scenario behaviors)
+    - Monitoring execution time and enforcing timeouts via watchdogs
+    - Tracking performance metrics (system time, game time, duration)
+    - Handling graceful shutdown and cleanup
+
+The ScenarioManager operates a behavior tree (py_trees) that defines the scenario
+logic, including traffic events, weather changes, and success/failure conditions.
+It wraps the agent in an AgentWrapper that handles sensor setup and control application.
+
+Execution Flow:
+    1. load_scenario(): Prepare scenario tree and agent wrapper
+    2. run_scenario(): Execute tick loop until scenario completes or fails
+    3. stop_scenario(): Clean shutdown of scenario tree
+    4. cleanup(): Reset state for next route
+
+IMPORTANT: This class must not be modified. It is part of the evaluation infrastructure.
 """
 
 from __future__ import print_function
@@ -29,25 +50,61 @@ from leaderboard.utils.result_writer import ResultOutputProvider
 
 
 class ScenarioManager(object):
+    """Manages execution of CARLA driving scenarios with agent integration.
 
-    """
-    Basic scenario manager class. This class holds all functionality
-    required to start, run and stop a scenario.
+    This class is the core execution engine for leaderboard evaluation. It maintains
+    the simulation loop that alternates between:
+    1. Updating the scenario behavior tree (traffic, events, goals)
+    2. Calling the agent to produce vehicle controls
+    3. Ticking the CARLA simulation forward one timestep
+    4. Monitoring for timeout violations and scenario completion
 
-    The user must not modify this class.
+    The manager enforces strict timing requirements via two watchdogs:
+    - Agent watchdog: Ensures agent returns controls within timeout
+    - Simulation watchdog: Ensures CARLA simulation advances within timeout
 
-    To use the ScenarioManager:
-    1. Create an object via manager = ScenarioManager()
-    2. Load a scenario via manager.load_scenario()
-    3. Trigger the execution of the scenario manager.run_scenario()
-       This function is designed to explicitly control start and end of
-       the scenario execution
-    4. If needed, cleanup with manager.stop_scenario()
+    Timing Metrics:
+        The manager tracks both wall-clock (system) time and simulation (game) time
+        to compute route duration and performance ratios. These are used for
+        statistics and debugging.
+
+    Thread Safety:
+        The scenario tree ticks in a separate thread to allow monitoring and
+        timeout detection from the main thread.
+
+    Attributes:
+        scenario: RouteScenario instance being executed
+        scenario_tree: py_trees behavior tree defining scenario logic
+        ego_vehicles: List containing the ego vehicle actor
+        _agent_wrapper: AgentWrapper managing agent calls and sensors
+        _running: Flag indicating scenario execution state
+        _timeout: Maximum seconds allowed for agent/simulation steps
+        scenario_duration_system: Total wall-clock time for scenario (seconds)
+        scenario_duration_game: Total simulation time for scenario (seconds)
+
+    Usage:
+        manager = ScenarioManager(timeout=60.0, statistics_manager=stats)
+        manager.load_scenario(scenario, agent, route_index)
+        manager.run_scenario()
+        manager.stop_scenario()
+        manager.cleanup()
+
+    IMPORTANT: This class is part of the evaluation infrastructure and must not
+               be modified by users.
     """
 
     def __init__(self, timeout, statistics_manager, debug_mode=0):
-        """
-        Setups up the parameters, which will be filled at load_scenario()
+        """Initialize the scenario manager with timing and debugging parameters.
+
+        Args:
+            timeout (float): Maximum seconds allowed for agent response and simulation steps.
+                           Exceeding this raises a timeout error and fails the route.
+            statistics_manager: StatisticsManager instance for recording metrics
+            debug_mode (int, optional): Debug verbosity level. 0=off, higher=more verbose.
+                                       Defaults to 0.
+
+        Note:
+            Most attributes are initialized to None and populated during load_scenario().
         """
         self.route_index = None
         self.scenario = None
