@@ -1,86 +1,144 @@
+"""Utility Functions for 3D Projection, Coordinate Transformations, and Visualization.
+
+This module provides helper functions for:
+- Projecting 3D points to 2D image coordinates
+- Transforming between coordinate systems (world, ego, camera)
+- Drawing bounding boxes and dashed lines
+- Computing geometric properties (angles, distances)
+- Building projection matrices
+- Processing depth maps
+
+Used primarily for data collection and visualization in CARLA simulations.
+"""
+
 import numpy as np
 import cv2
 import math
 
+# Camera/window dimensions for visualization
 WINDOW_HEIGHT = 900
 WINDOW_WIDTH = 1600
 
+# Distance thresholds for saving different object types (meters)
 DIS_CAR_SAVE = 100
 DIS_WALKER_SAVE = 100
 DIS_SIGN_SAVE = 100
 DIS_LIGHT_SAVE = 100
 
+# 3D bounding box edge definitions (vertex pairs for 12 edges of a cube)
 edges = [[0,1], [1,3], [3,2], [2,0], [0,4], [4,5], [5,1], [5,7], [7,6], [6,4], [6,2], [7,3]]
 
 def get_image_point(loc, K, w2c):
-    # Calculate 2D projection of 3D coordinate
+    """Project a 3D world point to 2D image coordinates.
 
-    # Format the input coordinate (loc is a carla.Position object)
+    Transforms a 3D point from world coordinates to camera coordinates,
+    then projects it onto the 2D image plane using the camera intrinsic matrix.
+
+    Args:
+        loc: 3D point in world coordinates [x, y, z].
+        K: 3x3 camera intrinsic matrix.
+        w2c: 4x4 world-to-camera transformation matrix.
+
+    Returns:
+        tuple: (2D image point [u, v], depth in camera frame)
+    """
+    # Format the input coordinate as homogeneous coordinates
     point = np.array([loc[0], loc[1], loc[2], 1])
-    # transform to camera coordinates
+
+    # Transform to camera coordinates
     point_camera = np.dot(w2c, point)
 
-    # New we must change from UE4's coordinate system to an "standard"
-    # (x, y ,z) -> (y, -z, x)
-    # and we remove the fourth componebonent also
+    # Convert from UE4's coordinate system to standard camera coordinates
+    # UE4: (x, y, z) -> Standard: (y, -z, x)
     point_camera = [point_camera[1], -point_camera[2], point_camera[0]]
 
     depth = point_camera[2]
 
-    # now project 3D->2D using the camera matrix
+    # Project 3D point to 2D using the camera intrinsic matrix
     point_img = np.dot(K, point_camera)
-    # normalize
+
+    # Normalize by depth (perspective division)
     point_img[0] /= point_img[2]
     point_img[1] /= point_img[2]
-    
+
     return point_img[0:2], depth
 
 def point_in_canvas_wh(pos):
-    """Return true if point is in canvas"""
+    """Check if a 2D point lies within the image canvas bounds.
+
+    Args:
+        pos: 2D point [x, y] in image coordinates.
+
+    Returns:
+        bool: True if point is within canvas bounds, False otherwise.
+    """
     if (pos[0] >= 0) and (pos[0] < WINDOW_WIDTH) and (pos[1] >= 0) and (pos[1] < WINDOW_HEIGHT):
         return True
     return False
 
 def get_forward_vector(yaw):
+    """Compute the forward direction vector from a yaw angle.
+
+    Args:
+        yaw: Yaw angle in degrees.
+
+    Returns:
+        np.array: 3D unit vector [x, y, z] pointing in the forward direction.
+    """
     # Convert the yaw angle from degrees to radians
     yaw_rad = math.radians(yaw)
-    # Calculate the X and Y components of the forward vector (in a left-handed coordinate system with Z-axis upwards)
-    # Note: In a left-handed coordinate system, the positive Y direction could correspond to either forward or backward, depending on the specific application scenario
+
+    # Calculate the X and Y components of the forward vector
+    # In a left-handed coordinate system with Z-axis upwards
     x = math.cos(yaw_rad)
     y = math.sin(yaw_rad)
+
     # On a horizontal plane, the Z component of the forward vector is 0
     z = 0
+
     return np.array([x, y, z])
 
 def calculate_cube_vertices(center, extent):
+    """Calculate the 8 vertices of a 3D bounding box.
+
+    Args:
+        center: Center point as list [x, y, z] or CARLA Location object.
+        extent: Half-extents as list [x, y, z] or CARLA Vector3D object.
+
+    Returns:
+        list: List of 8 vertices as (x, y, z) tuples defining the bounding box corners.
+    """
+    # Handle both list and CARLA object inputs
     if isinstance(center, list):
         cx, cy, cz = center
         x, y, z = extent
     else:
         cx, cy, cz = center.x,  center.y,  center.z
         x, y, z = extent.x, extent.y, extent.z
+
+    # Generate all 8 corners of the box
     vertices = [
-        (cx + x, cy + y, cz + z),
-        (cx + x, cy + y, cz - z),
-        (cx + x, cy - y, cz + z),
-        (cx + x, cy - y, cz - z),
-        (cx - x, cy + y, cz + z),
-        (cx - x, cy + y, cz - z),
-        (cx - x, cy - y, cz + z),
-        (cx - x, cy - y, cz - z)
+        (cx + x, cy + y, cz + z),  # +++ corner
+        (cx + x, cy + y, cz - z),  # ++- corner
+        (cx + x, cy - y, cz + z),  # +-+ corner
+        (cx + x, cy - y, cz - z),  # +-- corner
+        (cx - x, cy + y, cz + z),  # -++ corner
+        (cx - x, cy + y, cz - z),  # -+- corner
+        (cx - x, cy - y, cz + z),  # --+ corner
+        (cx - x, cy - y, cz - z)   # --- corner
     ]
     return vertices
 
 def draw_dashed_line(img, start_point, end_point, color, thickness=1, dash_length=5):
-    """
-    Draw a dashed line on an image.
-    Arguments:
-    - img: The image on which to draw the dashed line.
-    - start_point: The starting point of the dashed line, in the format (x, y).
-    - end_point: The ending point of the dashed line, in the format (x, y).
-    - color: The color of the dashed line, in the format (B, G, R).
-    - thickness: The thickness of the line.
-    - dash_length: The length of each dash segment in the dashed line.
+    """Draw a dashed line on an image.
+
+    Args:
+        img: The image on which to draw the dashed line (modified in-place).
+        start_point: Starting point of the line (x, y).
+        end_point: Ending point of the line (x, y).
+        color: Line color in BGR format (B, G, R).
+        thickness: Line thickness in pixels.
+        dash_length: Length of each dash segment in pixels.
     """
     # Calculate total length
     d = np.sqrt((end_point[0] - start_point[0])**2 + (end_point[1] - start_point[1])**2)

@@ -1,10 +1,37 @@
-"""
-This script is used to augment the VQA dataset using GPT-4o.
-It generates multiple variations of questions, answers, and objects by calling the OpenAI API.
-The script reads the original dataset, processes the data to replace certain keywords with placeholders,
-and then uses the OpenAI API to generate augmented data.
-The augmented data is saved in JSON files for questions, answers, and objects.
-Existing augmentations are loaded if available, and new augmentations are added to them.
+"""Data Augmentation: Generate VQA Variations using GPT-4
+
+This module uses GPT-4 to generate linguistic variations of VQA (Visual Question Answering)
+data, including questions, answers, and object descriptions. The augmentation process creates
+diverse phrasings while preserving semantic content through placeholder substitution.
+
+The augmentation pipeline:
+1. Extracts questions, answers, and object descriptions from DriveLM VQA data
+2. Replaces specific elements with placeholders:
+   - Object types -> <OBJECT>
+   - Locations -> <LOCATION>
+   - Distances -> <DISTANCE>
+3. Removes duplicates to create a unique set of templates
+4. Uses GPT-4 to generate 20 variations of each template
+5. Saves augmentations incrementally to handle large datasets
+6. Merges with existing augmentations to avoid redundant API calls
+
+API configuration:
+- Uses OpenAI GPT-4 with Azure endpoint
+- Implements retry logic for robustness
+- Processes data in parallel using multiprocessing
+
+Typical usage:
+    python gpt_augment_vqa.py
+
+Input:
+    - database/simlingo/drivelm/**/*.json.gz: VQA data files
+
+Output:
+    - data/augmented_templates/drivelm_train_augmented/all_qs_augmented.json
+    - data/augmented_templates/drivelm_train_augmented/all_as_augmented.json
+    - data/augmented_templates/drivelm_train_augmented/all_objs_augmented.json
+
+Note: Requires valid OpenAI API key in initialize_client() function
 """
 
 import numpy as np

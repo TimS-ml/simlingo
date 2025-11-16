@@ -1,6 +1,19 @@
-'''
-File that aggregates results of a carla evaluation run into a csv file.
-'''
+"""Enhanced CARLA Evaluation Results Parser with Extended Metrics.
+
+This is an enhanced version of result_parser.py that aggregates CARLA autonomous
+driving evaluation results into CSV files. Additional features include:
+- Support for scenario names and weather IDs
+- Multiple filter categories (route, town, status, weather, scenario)
+- Batch processing capability for multiple evaluation folders
+- Uses glob for more efficient file discovery
+
+Usage:
+    python result_parser_new.py --xml <routes_file> --results <results_folder> [--strict]
+
+Example:
+    python result_parser_new.py --xml leaderboard/data/routes_validation.xml
+                               --results eval/simlingo_base/routes_validation/1/res
+"""
 
 import os
 import glob
@@ -13,9 +26,13 @@ import numpy as np
 import ujson
 import math
 
+# Scaling factor for penalty calculations
 scale_factor = 0.2
+
+# Dictionary mapping infraction types to their penalty multipliers
+# These penalties are applied exponentially based on infractions per kilometer
 PENALTY_VALUE_DICT = {
-    # Traffic events that substract a set amount of points.
+    # Traffic events that subtract a set amount of points
     'collisions_pedestrian': 0.5 * scale_factor,
     'collisions_vehicle': 0.6 * scale_factor,
     'collisions_layout': 0.65 * scale_factor,
@@ -25,7 +42,7 @@ PENALTY_VALUE_DICT = {
     'stop_infraction': 0.8 * scale_factor,
 }
 
-# available arguments
+# Parse command-line arguments (defined globally for batch processing)
 parser = argparse.ArgumentParser()
 parser.add_argument('--xml', type=str, default='leaderboard/data/routes_validation.xml', help='Routes file.')
 parser.add_argument('--results', type=str, default='eval/simlingo_base/routes_validation/1/res', help='Folder with json files to be parsed')
@@ -34,20 +51,41 @@ parser.add_argument('--strict',
                     default=False,
                     help='If set only creates the results file if all routes finished correctly.')
 
-# args = parser.parse_args()
+# args = parser.parse_args()  # Parsed in main block below
 
 def min_speed_penalty(percentage):
-  score_penalty = (1 - (1 - 0.7) * (1 - percentage / 100))
-  return score_penalty
+    """Calculate penalty for driving below minimum speed.
+
+    Args:
+        percentage: Percentage of expected speed (0-100).
+
+    Returns:
+        float: Score penalty multiplier (0.0 to 1.0).
+    """
+    score_penalty = (1 - (1 - 0.7) * (1 - percentage / 100))
+    return score_penalty
 
 def outside_route_lanes_penalty(percentage):
-  score_penalty = (1 - (1 - 0.0) * percentage / 100)
-  return score_penalty
+    """Calculate penalty for driving outside designated route lanes.
+
+    Args:
+        percentage: Percentage of time spent outside lanes (0-100).
+
+    Returns:
+        float: Score penalty multiplier (0.0 to 1.0).
+    """
+    score_penalty = (1 - (1 - 0.0) * percentage / 100)
+    return score_penalty
 
 def main():
+    """Main function to parse CARLA evaluation results and generate CSV reports.
 
-  
-  infraction_names = [
+    This enhanced version supports additional metrics including scenario names,
+    weather conditions, and route status. Results are filtered and aggregated
+    across multiple categories for comprehensive analysis.
+    """
+    # List of all possible infraction types to track
+    infraction_names = [
                     "collisions_layout",
                     "collisions_pedestrian",
                     "collisions_vehicle",

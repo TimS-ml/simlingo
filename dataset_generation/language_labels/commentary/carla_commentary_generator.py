@@ -1,3 +1,43 @@
+"""Language Labels: Generate Driving Commentary Annotations for CARLA Simulations
+
+This module generates natural language driving commentary for CARLA simulation data, creating
+the commentary portion of the SimLingo dataset. Commentary provides frame-by-frame descriptions
+of the driving scene, decisions, and important objects/events.
+
+Commentary generation process:
+1. Loads CARLA simulation data (measurements, bounding boxes, route info)
+2. Analyzes the current driving situation (speed, junctions, hazards, scenarios)
+3. Identifies key objects and events worthy of commentary
+4. Constructs natural language descriptions using templates and rules
+5. Applies linguistic variation through template augmentation
+6. Saves commentary with metadata as compressed JSON
+
+Commentary types:
+- Scenario-specific: Tailored to CARLA scenario types (e.g., VehicleTurningRoute)
+- Speed-related: Adjusting speed, stopping, accelerating
+- Junction navigation: Approaching/navigating intersections with traffic lights
+- Object awareness: Describing vehicles, pedestrians, obstacles
+- Lane changes and turns: Explaining lateral maneuvers
+- Traffic rules: Stop signs, traffic lights, yielding
+
+Key features:
+- Template-based generation with placeholders for dynamic content
+- Object filtering based on visibility and relevance
+- Spatial reasoning for position descriptions (front, left, right)
+- Speed and distance quantification in natural language
+- Scenario context integration for coherent narratives
+
+Known limitations:
+- Highway acceleration/exit lanes treated as intersections
+- Limited handling of complex multi-agent interactions
+
+Typical usage:
+    python carla_commentary_generator.py
+
+Output:
+    database/simlingo/commentary/**/*.json.gz - Commentary annotations with templates
+"""
+
 import os
 import glob
 import gzip
@@ -12,11 +52,6 @@ import re
 import textwrap
 
 from dataset_generation.language_labels.utils import *
-
-"""
-Main class for processing and converting the pdm_lite dataset to the Commentary for SimLingo.
-Limitations:
-- highway acceleration lane and exit lane are treated as intersections.
 
 """
 

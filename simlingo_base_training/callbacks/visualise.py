@@ -1,3 +1,19 @@
+"""Visualization callback for monitoring SimLingo-Base model training.
+
+This module provides a PyTorch Lightning callback that periodically generates
+visualizations of model predictions during training. It creates plots comparing
+ground truth and predicted waypoints/routes.
+
+Key Components:
+    - VisualiseCallback: Main callback for periodic visualization
+    - once_per_step: Decorator ensuring callback runs once per optimization step
+    - visualise_waypoints: Function to create waypoint comparison plots
+    - fig_to_np: Helper to convert matplotlib figures to numpy arrays
+
+The visualizations help monitor training progress and identify potential issues
+with waypoint or route prediction.
+"""
+
 from typing import Any, Optional, Tuple
 
 import cv2
@@ -19,26 +35,32 @@ from simlingo_base_training.utils.custom_types import DrivingExample
 from simlingo_base_training.utils.projection import get_camera_intrinsics, project_points
 
 
+# Global dictionary to track first batch index for each training step
 _STEPS_TO_FIRST_IDX: Dict[int, int] = {}
 
 
 def once_per_step(function: Callable[[Callback, Trainer, LightningModule, Any, Any, int], None]) -> Callable:
-    """
-    ``on_train_batch_end`` gets called by pytorch lightning an ``accumulate_grad_batches`` number of times per global step.
-    Sometimes ``on_train_batch_end`` is intended per optimisation step, not per each forward pass of a batch.
-    This wrapper provides such behaviour, in lack of having found an integrated pytorch lightning way so far*.
+    """Decorator to ensure callback runs only once per optimization step.
+
+    PyTorch Lightning calls `on_train_batch_end` multiple times per optimization step
+    when using gradient accumulation. This decorator ensures the wrapped function
+    executes only on the first call for each global step.
+
+    Args:
+        function: The callback function to wrap. Must be from a pl.Callback class
+                  with signature (self, trainer, pl_module, outputs, batch, batch_idx).
+
+    Returns:
+        Wrapped function that executes only once per optimization step.
 
     Note:
-        Wrapper specifically for `on_train_batch_end` from a pl `Callback`, in regards to the function signature.
+        Uses a global dictionary to track which batch_idx was seen first for each step.
+        Not thread-safe but callbacks are expected to run sequentially per process.
     """
-
-    # * `on_before_optimizer_step` is available but gets called before a step is finished, potentially leading to
-    #   unexpected behaviour (e.g. report step timings that cut across steps, etc).
-    # NOTE: The `_STEPS_TO_FIRST_IDX` global dict is not threadsafe, but `on_train_batch_end` is expected to only be
-    #       called sequentially per process.
-    # NOTE(technical): When `on_train_batch_end` is called, `trainer.global_step` is already updated. Hence taking the
-    # first occurring `batch_idx` for a specific step is effectively the last `batch_idx` from the previous step and the
-    # reporting thus is correct.
+    # Implementation note: `on_before_optimizer_step` exists but gets called before a step is finished,
+    # potentially leading to unexpected behavior when measuring timing across steps.
+    # The `_STEPS_TO_FIRST_IDX` global dict is not threadsafe, but `on_train_batch_end` is expected
+    # to only be called sequentially per process.
     @wraps(function)
     def only_on_first_go(
         self: Callback, trainer: Trainer, pl_module: LightningModule, outputs: Any, batch: Any, batch_idx: int
@@ -66,7 +88,21 @@ def once_per_step(function: Callable[[Callback, Trainer, LightningModule, Any, A
 
 
 class VisualiseCallback(Callback):
+    """PyTorch Lightning callback for visualizing model predictions.
+
+    Periodically generates and logs comparison plots of predicted vs ground truth
+    waypoints and routes. Helps monitor training progress visually.
+
+    Attributes:
+        interval: Number of training steps between visualizations.
+    """
+
     def __init__(self, interval: int):
+        """Initialize the visualization callback.
+
+        Args:
+            interval: How often to generate visualizations (in training steps).
+        """
         super().__init__()
         self.interval = interval
 
@@ -80,6 +116,24 @@ class VisualiseCallback(Callback):
         batch: DrivingExample,
         batch_idx: int,
     ):
+        """Called at the end of each training batch.
+
+        Generates visualizations at specified intervals and logs them to W&B or TensorBoard.
+
+        Args:
+            trainer: PyTorch Lightning trainer instance.
+            pl_module: The LightningModule being trained.
+            outputs: Outputs from the training step.
+            batch: Current batch of training data.
+            batch_idx: Index of the current batch.
+
+        Returns:
+            None
+
+        Side Effects:
+            - Logs waypoint and route visualizations to logger
+            - Clears cache if model has clear_cache method
+        """
         if trainer.global_step % self.interval != 0:
             return
 
@@ -114,6 +168,24 @@ class VisualiseCallback(Callback):
         pl_module: pl.LightningModule,
         name: str,
     ):
+        """Generate and log visualization of waypoints or routes (rank 0 only).
+
+        Creates comparison plots between predicted and ground truth trajectories.
+        Only executes on the main process in distributed training.
+
+        Args:
+            batch: Batch of driving examples with labels.
+            waypoints: Predicted waypoints or routes from the model.
+            trainer: PyTorch Lightning trainer instance.
+            pl_module: The LightningModule being trained.
+            name: Name for the visualization ('waypoints' or 'route').
+
+        Returns:
+            None
+
+        Side Effects:
+            Logs visualization images to the configured logger.
+        """
         if not pl_module.logger:
             return
 
@@ -132,6 +204,14 @@ class VisualiseCallback(Callback):
 
 
 def fig_to_np(fig):
+    """Convert a matplotlib figure to a numpy array.
+
+    Args:
+        fig: Matplotlib figure object.
+
+    Returns:
+        numpy.ndarray: RGB image array of shape (height, width, 3) with dtype uint8.
+    """
     fig.tight_layout()
     fig.canvas.draw()
     data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
@@ -140,6 +220,24 @@ def fig_to_np(fig):
 
 @torch.no_grad()
 def visualise_waypoints(batch: DrivingExample, waypoints, route=False):
+    """Create comparison plot of predicted vs ground truth waypoints/routes.
+
+    Generates a grid of subplots (up to 16 examples) showing both predicted and
+    ground truth trajectories in bird's-eye view.
+
+    Args:
+        batch: Batch of driving examples containing ground truth labels.
+        waypoints: Predicted waypoints or routes from the model, shape [B, N, 2].
+        route: If True, visualizes routes (20 points); if False, waypoints (11 points).
+
+    Returns:
+        numpy.ndarray: RGB image array containing the visualization grid.
+
+    Note:
+        - Predicted trajectories shown in blue
+        - Ground truth trajectories shown in green
+        - Coordinates are in vehicle's local frame (x: forward, y: left)
+    """
     assert batch.driving_label is not None
 
     n = 11

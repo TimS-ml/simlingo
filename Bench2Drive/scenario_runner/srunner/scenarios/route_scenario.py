@@ -5,8 +5,63 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-This module provides Challenge routes as standalone scenarios
+"""RouteScenario - Autonomous driving benchmark with waypoint routes and scenario sequences.
+
+This module implements the RouteScenario class, which defines a complete route-based
+autonomous driving challenge. The ego vehicle must navigate a predefined route while
+encountering a sequence of smaller scenario events triggered at specific locations.
+
+Route scenarios are the foundation of autonomous driving benchmarks like the CARLA
+Challenge and Leaderboard. They evaluate an agent's ability to handle:
+    - Long-distance navigation following a global route
+    - Dynamic scenario events (cut-ins, pedestrian crossings, etc.)
+    - Traffic rules compliance (red lights, stop signs, lane keeping)
+    - Real-world driving challenges (weather, lighting conditions, traffic)
+
+Architecture:
+    A RouteScenario consists of:
+    1. Route: Sequence of waypoints defining the path to follow
+    2. Triggered Scenarios: Smaller scenarios activated at specific route locations
+    3. Background Traffic: Ambient vehicles and pedestrians
+    4. Weather/Lighting: Environmental conditions along the route
+    5. Evaluation Criteria: Metrics for success (route completion, collisions, etc.)
+
+Key Components:
+    - Route interpolation and GPS conversion for agent interface
+    - Scenario filtering (only scenarios near route are activated)
+    - Dynamic scenario triggering via blackboard variables
+    - Timeout estimation based on route length
+    - Standard criteria: collision, traffic lights, route adherence, etc.
+
+Criteria Evaluated:
+    - CollisionTest: Detect collisions with other actors
+    - InRouteTest: Check ego stays near the planned route
+    - RouteCompletionTest: Measure percentage of route completed
+    - OutsideRouteLanesTest: Penalize lane departures
+    - RunningRedLightTest: Detect red light violations
+    - RunningStopTest: Detect stop sign violations
+    - ActorBlockedTest: Detect if ego is stuck/blocked
+    - MinimumSpeedRouteTest: Ensure minimum progress speed
+
+Usage:
+    Routes are defined in XML files specifying:
+    - Waypoint positions (usually sparse, e.g., every 20 meters)
+    - Scenario definitions to trigger along the route
+    - Weather and lighting conditions
+    - Optional traffic density settings
+
+Example XML:
+    <route id="1" town="Town01">
+        <waypoint x="100" y="200" z="1" />
+        <waypoint x="150" y="250" z="1" />
+        <weather cloudiness="50" precipitation="20" />
+        <scenario name="VehicleTurning" type="Scenario4" />
+    </route>
+
+Note:
+    RouteScenario extends BasicScenario and uses a special parallel behavior tree
+    structure that runs the route navigation, triggered scenarios, background traffic,
+    and criteria evaluation concurrently.
 """
 
 from __future__ import print_function
@@ -52,15 +107,52 @@ SECONDS_GIVEN_PER_METERS = 0.4
 
 
 class RouteScenario(BasicScenario):
+    """Route-based autonomous driving scenario with waypoint navigation and event triggers.
 
-    """
-    Implementation of a RouteScenario, i.e. a scenario that consists of driving along a pre-defined route,
-    along which several smaller scenarios are triggered
+    Implements a complete autonomous driving challenge where the ego vehicle must follow
+    a predefined route while handling dynamically triggered scenario events. This is the
+    primary scenario type for benchmarks like the CARLA Leaderboard.
+
+    The route is defined as a sequence of waypoints with:
+        - Interpolation to dense waypoint spacing (1-2 meters)
+        - GPS coordinate conversion for agent navigation interface
+        - RoadOption annotations (lane follow, left/right/straight, etc.)
+
+    Scenario events are triggered when the ego vehicle reaches specific route positions,
+    activating smaller scenarios like cut-ins, pedestrian crossings, or obstacle avoidance.
+
+    Attributes:
+        route (list): Interpolated waypoint sequence [(transform, RoadOption), ...]
+        timeout (float): Estimated time limit based on route length (0.4s per meter)
+        config: RouteConfiguration with route, weather, scenarios
+
+    Workflow:
+        1. Load and interpolate route waypoints
+        2. Filter scenario configs to those near the route
+        3. Spawn ego vehicle at route start
+        4. Estimate timeout based on route length
+        5. Build triggered scenario sequence
+        6. Initialize behavior tree with route following + scenarios + background
+
+    See Also:
+        BasicScenario: Base class for behavior tree structure
+        RouteParser: XML route file parsing
+        ScenarioTriggerer: Blackboard-based scenario activation
     """
 
     def __init__(self, world, config, debug_mode=False, criteria_enable=True, timeout=300):
-        """
-        Setup all relevant parameters and create scenarios along route
+        """Initialize route scenario with waypoints, scenarios, and background traffic.
+
+        Args:
+            world (carla.World): CARLA world instance
+            config (RouteConfiguration): Route definition with keypoints and scenario configs
+            debug_mode (int/bool): Debug level (0=off, 1=draw route, 2=verbose)
+            criteria_enable (bool): Enable evaluation criteria
+            timeout (float): Override timeout (default: auto-calculated from route length)
+
+        Note:
+            Timeout is auto-estimated as route_length * 0.4 seconds unless overridden.
+            Debug mode 1 draws the route waypoints in the simulator.
         """
 
         self.config = config

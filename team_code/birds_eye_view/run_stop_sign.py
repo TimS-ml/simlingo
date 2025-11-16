@@ -1,6 +1,25 @@
-"""
-Tests if a stop sign is relevant for the a particular vehicle.
-Code adapted from https://github.com/zhejz/carla-roach
+"""Stop Sign Detection - Relevance Testing for Ego Vehicle.
+
+This module implements logic to determine if a stop sign is relevant to the
+ego vehicle based on proximity, road topology, and vehicle state.
+
+A stop sign is considered relevant if:
+1. It is within proximity threshold of the vehicle
+2. It is ahead of the vehicle on its current lane/route
+3. The vehicle is approaching it (not already past it)
+
+This is used to:
+- Render relevant stop signs in BEV semantic maps
+- Provide stop sign state to the driving agent
+- Record stop sign interactions in dataset labels
+
+The module tracks whether the ego vehicle has cleared each stop sign to avoid
+duplicate detections.
+
+Code adapted from: https://github.com/zhejz/carla-roach
+
+Classes:
+    RunStopSign: Criteria checker for stop sign relevance to ego vehicle
 """
 
 import carla

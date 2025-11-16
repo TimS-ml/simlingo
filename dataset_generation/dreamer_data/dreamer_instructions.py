@@ -1,3 +1,37 @@
+"""Dreamer Data: Generate Action-Conditioned Driving Instructions and Safety Assessments
+
+This module generates natural language driving instructions and safety assessments for
+the Dreamer dataset. It processes alternative driving trajectories and creates instruction-
+trajectory pairs with safety labels indicating whether the instruction can be safely executed.
+
+The module handles multiple instruction types:
+- Lane changes (relative position, absolute position, by lane type)
+- Speed adjustments (faster, slower, stop, target speed)
+- Collision avoidance (crashes with objects, pedestrians, dynamic agents)
+- Route deviations (following vs. deviating from expert route)
+
+For each instruction:
+1. Generates natural language text using templates with placeholders
+2. Forecasts waypoints using the kinematic bicycle model
+3. Evaluates safety (collision risk, speed limit compliance, pedestrian proximity)
+4. Provides route reasoning (deviation from expert route)
+5. Creates safety assessment (follow, ignore with reason)
+
+Safety checks:
+- Collision detection with static and dynamic objects
+- Speed limit compliance
+- Pedestrian proximity when accelerating
+- Legal lane changes (no opposing traffic, no sidewalk)
+- IDM (Intelligent Driver Model) target speed reasonableness
+
+Typical usage:
+    dreamer_dict = get_info(alternative_trajectories, route_adjusted, route_original,
+                            current_measurement, walker_close, ego_info)
+
+Returns:
+    Dictionary mapping instruction modes to lists of instruction-waypoint-safety samples
+"""
+
 import random
 import re
 

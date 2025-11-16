@@ -1,6 +1,16 @@
-'''
-File that aggregates results of a carla evaluation run into a csv file.
-'''
+"""CARLA Evaluation Results Parser and CSV Aggregator.
+
+This module aggregates and processes results from CARLA autonomous driving
+evaluation runs into a structured CSV file. It computes driving scores, route
+completion rates, and normalizes various traffic infractions.
+
+Usage:
+    python result_parser.py --xml <routes_file> --results <results_folder> [--strict]
+
+Example:
+    python result_parser.py --xml leaderboard/data/routes_validation.xml
+                           --results eval/simlingo_base/routes_validation/1/res
+"""
 
 import os
 import argparse
@@ -12,9 +22,13 @@ import numpy as np
 import ujson
 import math
 
+# Scaling factor for penalty calculations
 scale_factor = 0.2
+
+# Dictionary mapping infraction types to their penalty multipliers
+# These penalties are applied exponentially based on infractions per kilometer
 PENALTY_VALUE_DICT = {
-    # Traffic events that substract a set amount of points.
+    # Traffic events that subtract a set amount of points
     'collisions_pedestrian': 0.5 * scale_factor,
     'collisions_vehicle': 0.6 * scale_factor,
     'collisions_layout': 0.65 * scale_factor,
@@ -25,26 +39,51 @@ PENALTY_VALUE_DICT = {
 }
 
 def min_speed_penalty(percentage):
-  score_penalty = (1 - (1 - 0.7) * (1 - percentage / 100))
-  return score_penalty
+    """Calculate penalty for driving below minimum speed.
+
+    Args:
+        percentage: Percentage of expected speed (0-100).
+
+    Returns:
+        float: Score penalty multiplier (0.0 to 1.0).
+    """
+    score_penalty = (1 - (1 - 0.7) * (1 - percentage / 100))
+    return score_penalty
 
 def outside_route_lanes_penalty(percentage):
-  score_penalty = (1 - (1 - 0.0) * percentage / 100)
-  return score_penalty
+    """Calculate penalty for driving outside designated route lanes.
+
+    Args:
+        percentage: Percentage of time spent outside lanes (0-100).
+
+    Returns:
+        float: Score penalty multiplier (0.0 to 1.0).
+    """
+    score_penalty = (1 - (1 - 0.0) * percentage / 100)
+    return score_penalty
 
 def main():
-  # available arguments
-  parser = argparse.ArgumentParser()
-  parser.add_argument('--xml', type=str, default='leaderboard/data/routes_validation.xml', help='Routes file.')
-  parser.add_argument('--results', default='eval/simlingo_base/routes_validation/1/res', type=str, required=True, help='Folder with json files to be parsed')
-  parser.add_argument('--strict',
-                      action='store_true',
-                      default=False,
-                      help='If set only creates the results file if all routes finished correctly.')
+    """Main function to parse CARLA evaluation results and generate CSV reports.
 
-  args = parser.parse_args()
+    Reads JSON result files from evaluation runs, computes normalized scores,
+    aggregates infractions, and outputs a comprehensive CSV file with statistics
+    grouped by route, town, and other filters.
 
-  infraction_names = [
+    Command-line arguments are processed to specify input files and behavior.
+    """
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--xml', type=str, default='leaderboard/data/routes_validation.xml', help='Routes file.')
+    parser.add_argument('--results', default='eval/simlingo_base/routes_validation/1/res', type=str, required=True, help='Folder with json files to be parsed')
+    parser.add_argument('--strict',
+                        action='store_true',
+                        default=False,
+                        help='If set only creates the results file if all routes finished correctly.')
+
+    args = parser.parse_args()
+
+    # List of all possible infraction types to track
+    infraction_names = [
                     "collisions_layout",
                     "collisions_pedestrian",
                     "collisions_vehicle",
@@ -57,8 +96,10 @@ def main():
                     "route_dev",
                     "vehicle_blocked",
                     "route_timeout"
-  ]
-  labels = [
+    ]
+
+    # Human-readable labels for CSV output
+    labels = [
         "Avg. driving score",
         "Avg. route completion",
         "Avg. infraction penalty",
@@ -74,127 +115,143 @@ def main():
         "Yield emergency vehicles infractions",
         "Scenario timeouts",
         "Min speed infractions"
-  ]
+    ]
 
-  total_score_labels = []
+    total_score_labels = []
 
-  driving_scores = []
-  route_completions = []
-  infraction_scores = []
-  normalized_driving_scores = []
-  normalized_infraction_scores = []
-  route_ids = []
-  duration_games = []
-  route_lengths = []
-  individual_infractions = []
+    # Initialize data structures for aggregating results
+    driving_scores = []  # Composed driving scores for each route
+    route_completions = []  # Percentage of route completed
+    infraction_scores = []  # Infraction penalty scores
+    normalized_driving_scores = []  # Normalized driving scores (DS)
+    normalized_infraction_scores = []  # Normalized infraction scores (IS)
+    route_ids = []  # Route identifiers
+    duration_games = []  # Game duration for each route (seconds)
+    route_lengths = []  # Physical length of each route (meters)
+    individual_infractions = []  # Per-route infraction counts
 
-  total_km_driven = 0.0
-  total_driven_hours = 0.0
-  total_number_of_routes = 0
-  total_infractions = {}
-  total_infractions_per_km = {}
+    # Global statistics
+    total_km_driven = 0.0  # Total distance driven across all routes
+    total_driven_hours = 0.0  # Total time driven across all routes
+    total_number_of_routes = 0  # Number of routes processed
+    total_infractions = {}  # Aggregate infraction counts
+    total_infractions_per_km = {}  # Infractions normalized per km
 
-  root = ET.parse(args.xml).getroot()
+    # Parse the XML routes file to extract route metadata
+    root = ET.parse(args.xml).getroot()
 
-  # build route matching dict
-  route_matching = {}
-  for route in root.iter('route'):
-    route_matching[route.attrib["id"]] = {'town': route.attrib["town"]}
+    # Build a dictionary mapping route IDs to their town names
+    route_matching = {}
+    for route in root.iter('route'):
+        route_matching[route.attrib["id"]] = {'town': route.attrib["town"]}
 
-  filenames = []
-  for foldername, _, files in os.walk(args.results):
-    paths = []
-    for filename in files:
-      if filename.endswith('.json'):
-        paths.append(os.path.join(foldername, filename))
-    filenames += paths
+    # Recursively find all JSON result files in the results directory
+    filenames = []
+    for foldername, _, files in os.walk(args.results):
+        paths = []
+        for filename in files:
+            if filename.endswith('.json'):
+                paths.append(os.path.join(foldername, filename))
+        filenames += paths
 
-  abort = False
-  # aggregate files
-  for f in filenames:
-    with open(f, encoding='utf-8') as json_file:
-      evaluation_data = ujson.load(json_file)
+    abort = False  # Flag to track if any critical errors occurred
 
-      if len(total_infractions) == 0:
-        for infraction_name in infraction_names:
-          total_infractions[infraction_name] = 0
+    # Process each JSON result file
+    for f in filenames:
+        with open(f, encoding='utf-8') as json_file:
+            evaluation_data = ujson.load(json_file)
 
-      for record in evaluation_data['_checkpoint']['records']:
-        if record['scores']['score_route'] <= 1e-7:
-          print('Warning: There is a route where the agent did not start to drive.' + ' Route ID: ' +
-                record['route_id'],
-                file=sys.stderr)
-        if record['status'] == 'Failed - Agent couldn\'t be set up':
-          print('Error: There is at least one route where the agent could not be set up.' + ' Route ID: ' +
-                record['route_id'],
-                file=sys.stderr)
-          abort = True
-        if record['status'] == 'Failed':
-          print('Error: There is at least one route that failed.' + ' Route ID: ' + record['route_id'],
-                file=sys.stderr)
-          abort = True
-        if record['status'] == 'Failed - Simulation crashed':
-          print('Error: There is at least one route where the simulation crashed.' + ' Route ID: ' +
-                record['route_id'],
-                file=sys.stderr)
-          abort = True
-        if record['status'] == 'Failed - Agent crashed':
-          print('Error: There is at least one route where the agent crashed.' + ' Route ID: ' + record['route_id'],
-                file=sys.stderr)
-          abort = True
+            # Initialize infraction counters on first file
+            if len(total_infractions) == 0:
+                for infraction_name in infraction_names:
+                    total_infractions[infraction_name] = 0
 
-        percentage_of_route_completed = record['scores']['score_route'] / 100.0
-        route_length_km = record['meta']['route_length'] / 1000.0
-        driven_km = percentage_of_route_completed * route_length_km
-        route_time_hours = record['meta']['duration_game'] / 3600.0  # conversion from seconds to hours
-        total_driven_hours += route_time_hours
-        total_km_driven += driven_km
-        if route_time_hours > 0.0:
-          avg_speed_km_h = driven_km / route_time_hours
-        else:
-          avg_speed_km_h = 0.0
+            # Process each route record in the checkpoint
+            for record in evaluation_data['_checkpoint']['records']:
+                # Check for various failure states and warn/abort accordingly
+                if record['scores']['score_route'] <= 1e-7:
+                    print('Warning: There is a route where the agent did not start to drive.' + ' Route ID: ' +
+                          record['route_id'],
+                          file=sys.stderr)
+                if record['status'] == 'Failed - Agent couldn\'t be set up':
+                    print('Error: There is at least one route where the agent could not be set up.' + ' Route ID: ' +
+                          record['route_id'],
+                          file=sys.stderr)
+                    abort = True
+                if record['status'] == 'Failed':
+                    print('Error: There is at least one route that failed.' + ' Route ID: ' + record['route_id'],
+                          file=sys.stderr)
+                    abort = True
+                if record['status'] == 'Failed - Simulation crashed':
+                    print('Error: There is at least one route where the simulation crashed.' + ' Route ID: ' +
+                          record['route_id'],
+                          file=sys.stderr)
+                    abort = True
+                if record['status'] == 'Failed - Agent crashed':
+                    print('Error: There is at least one route where the agent crashed.' + ' Route ID: ' + record['route_id'],
+                          file=sys.stderr)
+                    abort = True
 
-        total_number_of_routes += 1
-        local_infractions = {}
-        for infraction_name in infraction_names:
-          local_infractions[infraction_name] = 0
-          if infraction_name == 'outside_route_lanes':
-            if len(record['infractions'][infraction_name]) > 0:
-              meters_off_road = re.findall(r'\d+\.\d+', record['infractions'][infraction_name][0])[0]
-              km_off_road = float(meters_off_road) / 1000.0
-              total_infractions[infraction_name] += km_off_road
-              local_infractions[infraction_name] += km_off_road
-          elif infraction_name == 'min_speed_infractions':
-            if len(record['infractions'][infraction_name]) == 0:
-              total_infractions[infraction_name] += 0
-              local_infractions[infraction_name] += 0
-            else:
-              perc_speed_of_traffic = []
-              for min_speed_inf in record['infractions'][infraction_name]:
-                pattern = r"(\d+(\.\d+)?)%"
-                min_speed_section = float(re.findall(pattern, min_speed_inf)[0][0]) / 100.0
-                # clip to 0 to 1
-                min_speed_section = min(1.0, max(0.0, min_speed_section))
-                perc_speed_of_traffic.append(min_speed_section)
-              avg_min_speed = np.mean(perc_speed_of_traffic)
-              # We log percentage of route where the min speed was violated.
-              total_infractions[infraction_name] += 1.0 - avg_min_speed
-              local_infractions[infraction_name] += 1.0 - avg_min_speed
+                # Calculate distance and time metrics for this route
+                percentage_of_route_completed = record['scores']['score_route'] / 100.0
+                route_length_km = record['meta']['route_length'] / 1000.0  # Convert meters to kilometers
+                driven_km = percentage_of_route_completed * route_length_km
+                route_time_hours = record['meta']['duration_game'] / 3600.0  # Convert seconds to hours
+                total_driven_hours += route_time_hours
+                total_km_driven += driven_km
 
-          else:
-            num_infraction = len(record['infractions'][infraction_name])
-            total_infractions[infraction_name] += num_infraction
-            local_infractions[infraction_name] += num_infraction
+                # Calculate average speed
+                if route_time_hours > 0.0:
+                    avg_speed_km_h = driven_km / route_time_hours
+                else:
+                    avg_speed_km_h = 0.0
 
-        # Compute normalized driving score.
-        score_penalty = 1.0
-        score_route = record['scores']['score_route']
+                total_number_of_routes += 1
 
-        # Standard infractions
-        for inf_name in local_infractions:
-          if inf_name in PENALTY_VALUE_DICT:
-            if driven_km > 0.0:
-                score_penalty *= math.pow(PENALTY_VALUE_DICT[inf_name], (local_infractions[inf_name] / driven_km))
+                # Process infractions for this route
+                local_infractions = {}
+                for infraction_name in infraction_names:
+                    local_infractions[infraction_name] = 0
+                    # Special handling for off-road infractions (measured in distance)
+                    if infraction_name == 'outside_route_lanes':
+                        if len(record['infractions'][infraction_name]) > 0:
+                            meters_off_road = re.findall(r'\d+\.\d+', record['infractions'][infraction_name][0])[0]
+                            km_off_road = float(meters_off_road) / 1000.0
+                            total_infractions[infraction_name] += km_off_road
+                            local_infractions[infraction_name] += km_off_road
+                    # Special handling for min speed infractions (measured as percentage)
+                    elif infraction_name == 'min_speed_infractions':
+                        if len(record['infractions'][infraction_name]) == 0:
+                            total_infractions[infraction_name] += 0
+                            local_infractions[infraction_name] += 0
+                        else:
+                            perc_speed_of_traffic = []
+                            for min_speed_inf in record['infractions'][infraction_name]:
+                                pattern = r"(\d+(\.\d+)?)%"
+                                min_speed_section = float(re.findall(pattern, min_speed_inf)[0][0]) / 100.0
+                                # Clip to valid range [0, 1]
+                                min_speed_section = min(1.0, max(0.0, min_speed_section))
+                                perc_speed_of_traffic.append(min_speed_section)
+                            avg_min_speed = np.mean(perc_speed_of_traffic)
+                            # Log percentage of route where minimum speed was violated
+                            total_infractions[infraction_name] += 1.0 - avg_min_speed
+                            local_infractions[infraction_name] += 1.0 - avg_min_speed
+                    # Standard infractions (counted by number of occurrences)
+                    else:
+                        num_infraction = len(record['infractions'][infraction_name])
+                        total_infractions[infraction_name] += num_infraction
+                        local_infractions[infraction_name] += num_infraction
+
+                # Compute normalized driving score using penalty factors
+                score_penalty = 1.0  # Start with no penalty
+                score_route = record['scores']['score_route']
+
+                # Apply standard infractions with exponential decay based on density
+                for inf_name in local_infractions:
+                    if inf_name in PENALTY_VALUE_DICT:
+                        if driven_km > 0.0:
+                            # Penalty is exponential: base^(infractions/km)
+                            score_penalty *= math.pow(PENALTY_VALUE_DICT[inf_name], (local_infractions[inf_name] / driven_km))
 
         # Special infraction min speed
         if len(record['infractions']['min_speed_infractions']) > 0:

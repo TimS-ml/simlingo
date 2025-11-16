@@ -1,4 +1,12 @@
+# Main configuration file for SimLingo training
+# This uses Hydra for composable configuration management
+# See: https://hydra.cc/docs/intro/
+
+# Default configuration composition - loads configs in order
 defaults:
-  - train_base
-  - model/language_model: llm
-  - experiment: debug #simlingo_seed1
+  - train_base  # Base training configuration (if exists)
+  - model/language_model: llm  # Language model configuration
+  - experiment: debug  # Experiment config: use 'debug' for testing, 'simlingo_seed1' for production
+
+# To run a production experiment, change the experiment line to:
+# - experiment: simlingo_seed1

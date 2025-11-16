@@ -1,6 +1,29 @@
-"""
-Privileged driving agent used for data collection.
-Drives by accessing the simulator directly.
+"""AutoPilot - Privileged Expert Agent for Data Collection.
+
+This module implements the AutoPilot expert agent that uses privileged information
+from the CARLA simulator to drive perfectly. It is used for:
+1. Collecting expert demonstration datasets for imitation learning
+2. Providing ground truth control signals for training
+3. Baseline comparison during evaluation
+
+The AutoPilot has access to privileged information not available to learned agents:
+- Perfect localization (ground truth GPS, IMU)
+- Full 3D world state (all actors, traffic lights, stop signs)
+- HD map with lane topology and road geometry
+- Oracle route planner with scenario handling
+
+Key components:
+- PrivilegedRoutePlanner: Handles complex scenarios (lane changes, obstacles, etc.)
+- Lateral PID Controller: Smooth steering control with adaptive lookahead
+- Longitudinal Linear Regression Controller: Speed control matching expert behavior
+- Kinematic Bicycle Model: Vehicle motion prediction for collision avoidance
+- Scenario-specific logic: Handles CARLA leaderboard scenarios (construction, accidents, etc.)
+
+The agent uses Intelligent Driver Model (IDM) for longitudinal control with safety
+constraints from forecasted vehicle trajectories.
+
+Classes:
+    AutoPilot: Main privileged expert agent for data collection
 """
 
 import os

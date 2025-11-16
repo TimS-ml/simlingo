@@ -1,8 +1,25 @@
 """
-Generates a dataset for training on a SLURM cluster.
-Each route file is parallelized on its own machine.
-Monitors the data collection and continues crashed processes.
-Best run inside a tmux terminal.
+CARLA Dataset Collection Script for SLURM Clusters
+
+This script orchestrates distributed autonomous driving data collection on SLURM clusters
+for the SimLingo project. It submits parallel jobs to collect driving data from CARLA
+simulator across multiple routes and scenarios.
+
+Main Features:
+- Parallelizes data collection across multiple SLURM nodes (one route per node)
+- Monitors running jobs and automatically resubmits crashed/failed processes
+- Handles port allocation for CARLA servers (world, streaming, traffic manager)
+- Tracks job progress through result JSON files
+- Designed to run in a tmux terminal for long-running sessions
+
+Workflow:
+1. Scans route files (.xml) from the specified route folder
+2. Creates SLURM job submission scripts for each route
+3. Submits jobs respecting the max parallel job limit
+4. Monitors job status and automatically resubmits failed jobs (up to 3 retries)
+5. Continues until all routes are successfully collected
+
+Author: SimLingo Team
 """
 
 from datetime import datetime
@@ -17,6 +34,29 @@ import re
 
 
 def make_bash(code_dir, route_file_number, agent_name, route_file, ckeckpoint_endpoint, save_pth, seed, carla_root, town, repetition):
+    """
+    Generate the main execution bash script for CARLA data collection.
+
+    This function creates a shell script that:
+    - Sets up CARLA environment variables (paths, ports, seeds)
+    - Launches the CARLA simulator in headless mode
+    - Executes the leaderboard evaluator to collect driving data
+
+    Args:
+        code_dir (str): Root directory of the SimLingo codebase
+        route_file_number (str): Unique identifier for this route (e.g., "22_0")
+        agent_name (str): Path to the data collection agent script
+        route_file (str): Path to the route XML file to execute
+        ckeckpoint_endpoint (str): Path where result JSON will be saved
+        save_pth (str): Directory path for saving collected data
+        seed (int): Random seed for traffic manager (ensures different traffic patterns)
+        carla_root (str): Path to CARLA installation directory
+        town (str): CARLA town name (e.g., "Town01", "Town12")
+        repetition (int): Repetition number for this route
+
+    Returns:
+        str: Path to the created bash script file
+    """
     save_slurm = save_pth.replace("data/", "slurm/")
 
     jobfile = f"{save_slurm}/run_files/start_files/{route_file_number}_Rep{repetition}.sh"
@@ -74,6 +114,27 @@ sleep 180
     return jobfile
 
 def get_running_jobs(jobname, user_name):
+    """
+    Query SLURM for currently running jobs belonging to the user.
+
+    Uses squeue command to retrieve job information and parses the output
+    to extract job IDs, route numbers, and process IDs.
+
+    Args:
+        jobname (str): Name pattern of jobs to search for (e.g., "collect")
+        user_name (str): Username to filter jobs by
+
+    Returns:
+        tuple: Contains three elements:
+            - currently_num_running_jobs (int): Number of matching running jobs
+            - routefile_number_list (list[str]): List of route identifiers from job names
+            - pid_list (list[str]): List of SLURM job IDs (process IDs)
+
+    Example:
+        For a job named "eval_julian_4170_0", this returns:
+        - Route number: "4170_0"
+        - PID: "4767364"
+    """
     job_list = subprocess.check_output(
             (
                 f"SQUEUE_FORMAT2='jobid:10,username:{len(username)},name:130' squeue --sort V | grep {user_name} | \
@@ -82,33 +143,75 @@ def get_running_jobs(jobname, user_name):
             shell=True,
         ).decode("utf-8").splitlines()
     currently_num_running_jobs = len(job_list)
-    #  line is sth like "4767364   gwb791 eval_julian_4170_0   "
+    # Parse job list - example line format: "4767364   gwb791 eval_julian_4170_0   "
+    # Extract route number from job name (last two underscore-separated parts)
     routefile_number_list = [line.split("_")[-2] + "_" + line.split("_")[-1].strip() for line in job_list]
+    # Extract SLURM job ID (first column)
     pid_list = [line.split(" ")[0] for line in job_list]
     return currently_num_running_jobs, routefile_number_list, pid_list
 
-def get_last_line_from_file(filepath): # this is used to check log files for errors
+def get_last_line_from_file(filepath):
+    """
+    Efficiently read the last line from a file without loading the entire file.
+
+    This function seeks to the end of the file and reads backwards to find the last line,
+    which is useful for checking log files for error messages without reading gigabytes of logs.
+
+    Args:
+        filepath (str): Path to the file to read
+
+    Returns:
+        str: The last line of the file, or empty string if file is empty or cannot be read
+
+    Note:
+        Uses binary mode and seeks from end for memory efficiency with large log files
+    """
     try:
         with open(filepath, "rb", encoding="utf-8") as f:
             try:
+                # Seek to 2 bytes before end of file
                 f.seek(-2, os.SEEK_END)
+                # Read backwards until we find a newline character
                 while f.read(1) != b"\n":
                     f.seek(-2, os.SEEK_CUR)
             except OSError:
+                # File is too small or empty, seek to beginning
                 f.seek(0)
             last_line = f.readline().decode()
     except:
+        # Return empty string if any error occurs (file not found, permission denied, etc.)
         last_line=""
     return last_line
 
 def cancel_jobs_with_err_in_log(logroot, jobname, user_name):
-    # check if the log file contains certain error messages, then terminate the job
+    """
+    Monitor running jobs and cancel those with fatal errors in their log files.
+
+    Scans the last line of each job's output log to detect common CARLA/simulation errors
+    and automatically cancels jobs that have crashed or hung. This prevents wasted compute
+    resources on jobs that will never complete successfully.
+
+    Fatal errors detected:
+    - "Actor ... not found!" - CARLA actor management error
+    - "Watchdog exception - Timeout" - Job timed out without progress
+    - "Engine crash handling finished; re-raising signal 11" - Unreal Engine crash
+
+    Args:
+        logroot (str): Root directory containing job log files
+        jobname (str): Job name pattern to search for
+        user_name (str): Username to filter jobs by
+
+    Side Effects:
+        Cancels SLURM jobs via `scancel` command if fatal errors are detected
+    """
+    # Scan all running jobs for error patterns
     print("Checking logs for errors...")
     _, routefile_number_list, pid_list = get_running_jobs(jobname, user_name)
     for i, rf_num in enumerate(routefile_number_list):
         logfile_path = os.path.join(logroot, f"run_files/logs/qsub_out{rf_num}.log")
         last_line = get_last_line_from_file(logfile_path)
         terminate = False
+        # Check for various fatal error patterns
         if "Actor" in last_line and "not found!" in last_line:
             terminate = True
         if "Watchdog exception - Timeout" in last_line:
@@ -120,36 +223,95 @@ def cancel_jobs_with_err_in_log(logroot, jobname, user_name):
             subprocess.check_output(f"scancel {pid_list[i]}", shell=True)
 
 def wait_for_jobs_to_finish(logroot, jobname, user_name, max_n_parallel_jobs):
+    """
+    Block until the number of running jobs drops below the maximum allowed.
+
+    Polls the job queue every 5 seconds and periodically checks for errors in logs.
+    This function is used to throttle job submission to respect cluster resource limits.
+
+    Args:
+        logroot (str): Root directory containing job log files
+        jobname (str): Job name pattern to search for
+        user_name (str): Username to filter jobs by
+        max_n_parallel_jobs (int): Maximum number of jobs allowed to run concurrently
+
+    Behavior:
+        - Checks logs for errors every 4th iteration (every ~20 seconds)
+        - Sleeps for 5 seconds between checks
+        - Returns when job count drops below the max limit
+    """
     currently_running_jobs, _, _ = get_running_jobs(jobname, user_name)
     print(f"{currently_running_jobs}/{max_n_parallel_jobs} jobs are running...")
     counter = 0
     while currently_running_jobs >= max_n_parallel_jobs:
+        # Check for errors periodically (every 4th iteration)
         if counter == 0:
             cancel_jobs_with_err_in_log(logroot, jobname, user_name)
         time.sleep(5)
         currently_running_jobs, _, _ = get_running_jobs(jobname, user_name)
-        counter = (counter + 1) % 4
+        counter = (counter + 1) % 4  # Cycle counter from 0 to 3
 
 def get_num_jobs(job_name, username):
+    """
+    Get the current number of running jobs and the maximum allowed parallel jobs.
+
+    Queries SLURM for running jobs matching the job name and username, then reads
+    the maximum job limit from a configuration file.
+
+    Args:
+        job_name (str): Job name pattern to search for
+        username (str): Username to filter jobs by
+
+    Returns:
+        tuple: (num_running_jobs, max_num_parallel_jobs)
+            - num_running_jobs (int): Current number of matching jobs in queue
+            - max_num_parallel_jobs (int): Maximum jobs allowed (from max_num_jobs.txt, default 1)
+
+    Note:
+        Reads max job limit from 'max_num_jobs.txt' file. If file doesn't exist or
+        cannot be read, defaults to 1 job at a time.
+    """
     len_usrn = len(username)
+    # Query SLURM and count matching jobs
     num_running_jobs = int(
         subprocess.check_output(
             f"SQUEUE_FORMAT2='username:{len_usrn},name:130' squeue --sort V | grep {username} | grep {job_name} | wc -l",
             shell=True,
         ).decode('utf-8').replace('\n', ''))
 
+    # Read maximum parallel jobs from config file
     try:
         with open('max_num_jobs.txt', 'r', encoding='utf-8') as f:
             max_num_parallel_jobs = int(f.read())
     except:
+        # Default to 1 if file not found or invalid
         max_num_parallel_jobs = 1
 
     return num_running_jobs, max_num_parallel_jobs
 
 def get_which_partition(default):
+    """
+    Determine which SLURM partition to use for job submission.
+
+    Reads partition name from 'partition.txt' file and validates it against
+    known cluster partitions. Falls back to default if invalid or file missing.
+
+    Args:
+        default (str): Default partition name to use if file not found or invalid
+
+    Returns:
+        str: Validated partition name to use for SLURM job submission
+
+    Valid Partitions:
+        - "a100-galvani" - A100 GPU partition
+        - "2080-galvani" - RTX 2080 GPU partition
+        - "2080-preemptable-galvani" - Preemptable RTX 2080 partition (lower priority)
+        - "a100-preemptable-galvani" - Preemptable A100 partition (lower priority)
+    """
     try:
         with open('partition.txt', 'r', encoding='utf-8') as f:
             partition_name = f.read()
+            # Validate partition name against known partitions
             if partition_name not in ["a100-galvani", "2080-galvani", "2080-preemptable-galvani", "a100-preemptable-galvani"]:
                 partition_name = default
     except:
@@ -161,7 +323,32 @@ def get_which_partition(default):
 
 
 def make_jobsub_file(save_path_data, jobname, route_file_number, partition_name, repetition, timeout="0-02:00"):
+    """
+    Create a SLURM job submission script for a data collection job.
+
+    Generates a bash script with SLURM directives that:
+    - Specifies resource requirements (GPU, CPU, memory, time limit)
+    - Finds available network ports for CARLA communication
+    - Logs git branch and commit information for reproducibility
+    - Executes the main data collection bash script
+
+    Args:
+        save_path_data (str): Base directory where data will be saved
+        jobname (str): Name for the SLURM job (used for identification in queue)
+        route_file_number (str): Unique identifier for this route
+        partition_name (str): SLURM partition to submit job to
+        repetition (int): Repetition number for this route
+        timeout (str, optional): SLURM time limit in format "D-HH:MM". Default: "0-02:00" (2 hours)
+
+    Returns:
+        str: Path to the created job submission script
+
+    Resource Requirements:
+        - 1 node, 1 task, 8 CPUs, 40GB RAM, 1 GPU
+        - Default timeout: 2 hours (can be overridden)
+    """
     save_slurm = save_path_data.replace("data/", "slurm/")
+    # Create necessary directory structure for logs and scripts
     os.makedirs(f"{save_slurm}/run_files/logs", exist_ok=True)
     os.makedirs(f"{save_slurm}/run_files/job_files", exist_ok=True)
     os.makedirs(f"{save_slurm}/run_files/start_files", exist_ok=True)
@@ -210,48 +397,78 @@ bash {save_slurm}/run_files/start_files/{route_file_number}_Rep{repetition}.sh $
     return jobfile
 
 if __name__ == "__main__":
-    repetitions = 1
-    repetition_start = 0
-    default_partition = "YOUR_PARTITION" 
-    job_name = "collect"
-    username = "YOUR_USER"
-    code_root = r"/path/to/simlingo"
-    carla_root = "/path/to/CARLA/root"
+    """
+    Main execution block for distributed CARLA dataset collection.
+
+    Configuration Steps:
+    1. Set up paths and user credentials
+    2. Scan for route XML files
+    3. Submit SLURM jobs for each route
+    4. Monitor job execution and resubmit failed jobs
+    5. Continue until all routes complete successfully
+
+    User Configuration Required:
+        - default_partition: Your SLURM partition name
+        - username: Your cluster username
+        - code_root: Path to simlingo repository
+        - carla_root: Path to CARLA installation
+        - root_folder: Base directory for saving datasets
+    """
+    # ==================== Configuration ====================
+    # Job execution parameters
+    repetitions = 1  # Number of times to repeat each route
+    repetition_start = 0  # Starting repetition index
+    default_partition = "YOUR_PARTITION"  # TODO: Set your SLURM partition
+    job_name = "collect"  # Name prefix for all submitted jobs
+    username = "YOUR_USER"  # TODO: Set your username
+
+    # Path configuration
+    code_root = r"/path/to/simlingo"  # TODO: Set path to this repository
+    carla_root = "/path/to/CARLA/root"  # TODO: Set path to CARLA installation
+
+    # Dataset naming and storage
     date = datetime.today().strftime("%Y_%m_%d")
-    dataset_name = "simlingo_v2_" + date
-    root_folder = r"database/"  # With ending slash
+    dataset_name = "simlingo_v2_" + date  # Dataset name includes date
+    root_folder = r"database/"  # Base folder for all datasets (with ending slash)
     data_save_directory = root_folder + dataset_name
     log_root = f"{data_save_directory}/slurm"
 
+    # ==================== Route Discovery ====================
     route_folder = f"{code_root}/data/simlingo"
 
-    # find all .xml files in route_folder
-    routes = glob.glob(f"{route_folder}/**/*balanced*/*.xml", recursive=True)
-    routes_lb1 = glob.glob(f"{route_folder}/**/*lb1*/**/*.xml", recursive=True)
+    # Find all route XML files - includes both balanced scenarios and leaderboard routes
+    routes = glob.glob(f"{route_folder}/**/*balanced*/*.xml", recursive=True)  # Balanced scenario routes
+    routes_lb1 = glob.glob(f"{route_folder}/**/*lb1*/**/*.xml", recursive=True)  # Leaderboard 1.0 routes
 
     routes = routes + routes_lb1
 
+    # ==================== Job Submission Setup ====================
     port_offset = 0
     job_number = 1
-    meta_jobs = {}
+    meta_jobs = {}  # Dictionary to track job status: {job_id: (finished, job_file, result_file, resubmit_count)}
 
-    #shuffle routes
-    random.seed(42)
+    # Shuffle routes for better load balancing across different scenarios
+    random.seed(42)  # Fixed seed for reproducibility
     random.shuffle(routes)
-    seed_counter = 1000000 * repetition_start - 1  # for the traffic manager, which is incremented so that we get different traffic each time
 
+    # Traffic manager seed counter - each route gets a unique seed for traffic variation
+    seed_counter = 1000000 * repetition_start - 1  # Incremented for each route
+
+    # ==================== Job Submission Loop ====================
     num_routes = len(routes)
     for repetition in range(repetition_start, repetitions):
         for route in routes:
             seed_counter += 1
 
+            # Extract town name from route file path
             try:
                 town = re.search('Town(\\d+)', route).group(0)
             except:
+                # Fallback for routes without town in filename
                 if 'validation' in route:
-                    town = 'Town13'
+                    town = 'Town13'  # CARLA validation town
                 elif 'training' in route:
-                    town = 'Town12'
+                    town = 'Town12'  # CARLA training town
                 else:
                     print(f"Town not found in route {route}")
                     continue
@@ -287,6 +504,7 @@ if __name__ == "__main__":
             meta_jobs[jobid] = (False, job_file, ckpt_endpoint, 0)  # job_finished, job_file, result_file, resubmitted
             job_number += 1
 
+    # ==================== Job Monitoring and Resubmission Loop ====================
     time.sleep(1)
     training_finished = False
     while not training_finished:
@@ -295,21 +513,26 @@ if __name__ == "__main__":
         cancel_jobs_with_err_in_log(log_root, job_name, username)
         time.sleep(20)
 
-        # resubmit unfinished jobs
+        # Check all submitted jobs and resubmit failed ones (up to 3 retries)
         for k in list(meta_jobs.keys()):
             job_finished, job_file, result_file, resubmitted = meta_jobs[k]
             need_to_resubmit = False
+
+            # Only check unfinished jobs that haven't exceeded retry limit
             if not job_finished and resubmitted < 3:
-                # check whether job is running
+                # Check if job is still in SLURM queue
                 if int(subprocess.check_output(f"squeue | grep {k} | wc -l", shell=True).decode("utf-8").strip()) == 0:
-                    # check whether result file is finished?
+                    # Job is not running - check if it completed successfully
                     if os.path.exists(result_file):
                         with open(result_file, "r", encoding="utf-8") as f_result:
                             evaluation_data = json.load(f_result)
                         progress = evaluation_data["_checkpoint"]["progress"]
+
+                        # Check if route execution is incomplete
                         if len(progress) < 2 or progress[0] < progress[1]:
                             need_to_resubmit = True
                         else:
+                            # Check each route record for failure status
                             for record in evaluation_data["_checkpoint"]["records"]:
                                 if record["scores"]["score_route"] <= 0.00000000001:
                                     need_to_resubmit = True
@@ -323,11 +546,12 @@ if __name__ == "__main__":
                                     need_to_resubmit = True
 
                         if not need_to_resubmit:
-                            # delete old job
+                            # Job completed successfully
                             print(f"Finished job {job_file}")
                             meta_jobs[k] = (True, None, None, 0)
 
                     else:
+                        # Result file doesn't exist - job failed to start or crashed early
                         need_to_resubmit = True
 
             if need_to_resubmit:

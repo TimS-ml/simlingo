@@ -1,3 +1,21 @@
+"""Utility functions for model training and optimization.
+
+This module provides helper functions for:
+    - Configuring parameter groups with different learning rates and weight decay
+    - Normalizing images with ImageNet statistics
+    - Summarizing losses from multiple components
+
+Key Functions:
+    - configure_params_groups: Set up optimizer parameter groups
+    - normalize_imagenet: ImageNet normalization for images
+    - summarise_losses: Aggregate loss dictionaries
+
+The parameter grouping logic intelligently handles:
+    - Different learning rates for vision vs language components
+    - Selective weight decay (excluding biases, normalizations, embeddings)
+    - Regex-based parameter matching for fine-grained control
+"""
+
 import re
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -10,6 +28,23 @@ from simlingo_base_training.utils.custom_types import ParamGroup, TrainingOutput
 
 
 def configure_params_groups(model: nn.Module, param_groups: Sequence[ParamGroup], verbose: bool = True):
+    """Configure parameter groups with different learning rates and weight decay.
+
+    Splits model parameters into groups based on regex patterns, applying different
+    learning rates and weight decay settings. Automatically excludes biases and
+    normalization layers from weight decay.
+
+    Args:
+        model: PyTorch model to configure.
+        param_groups: Sequence of ParamGroup tuples defining (pattern, lr, weight_decay).
+        verbose: Whether to print parameter assignments.
+
+    Returns:
+        list: List of optimizer parameter group dictionaries.
+
+    Raises:
+        AssertionError: If parameters overlap between groups or are unassigned.
+    """
     # Partition the parameters into those that will and those that will not experience regularising weight decay
     whitelist_weight_modules = (torch.nn.Linear, torch.nn.Conv2d, torch.nn.MultiheadAttention, torch.nn.GRU)
     blacklist_weight_modules = (

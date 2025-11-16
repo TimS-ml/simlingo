@@ -1,9 +1,43 @@
+"""Camera projection utilities for SimLingo-Base.
+
+This module provides functions for projecting 3D world points onto 2D camera images
+and creating camera calibration matrices.
+
+Key Functions:
+    - project_points: Project 3D points to 2D image coordinates
+    - get_camera_intrinsics: Create camera intrinsic matrix
+    - get_camera_extrinsics: Create camera extrinsic matrix
+    - get_camera_distortion: Create camera distortion coefficients
+
+These utilities are used for:
+    - Visualizing waypoints on camera images
+    - Understanding camera geometry
+    - Debugging model predictions
+
+The camera parameters are configured for CARLA simulator's default camera setup.
+"""
 
 import numpy as np
 import torch
 import cv2
 
 def project_points(points2D_list, K):
+    """Project 3D points to 2D image coordinates.
+
+    Uses OpenCV's projectPoints with CARLA camera parameters to project
+    bird's-eye view waypoints onto the camera image.
+
+    Args:
+        points2D_list: List of [x, y] coordinates in vehicle frame (BEV).
+        K: Camera intrinsic matrix, shape [3, 3].
+
+    Returns:
+        list: List of projected [u, v] image coordinates.
+
+    Note:
+        Assumes camera mounted at (0, 2.0, 1.5) relative to vehicle center
+        with no rotation (looking forward).
+    """
 
     all_points_2d = []
     for point in  points2D_list:

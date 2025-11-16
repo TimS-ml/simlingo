@@ -1,3 +1,35 @@
+"""Route Management: Balance Scenario Distribution via Upsampling
+
+This module balances the CARLA route dataset by ensuring each scenario type has
+approximately the same number of route instances. This is crucial for training
+models that don't overfit to common scenarios while underperforming on rare ones.
+
+The script:
+1. Analyzes existing route XML files to count scenarios by type
+2. Upsamples underrepresented scenarios through random selection with replacement
+3. Randomizes weather conditions for each upsampled route
+4. Adds random variance to scenario parameters (e.g., distances)
+5. Generates visualization plots comparing original vs balanced distributions
+
+Key features:
+- Ensures NUM_SAMPLES routes per scenario type
+- Randomizes weather on upsampled routes to increase diversity
+- Adds parameter variation to prevent exact duplicates
+- Tracks unique route usage to limit over-replication
+- Handles special scenarios (e.g., ControlLoss, HardBreakRoute) with downsampling
+
+The upsampling process:
+- Routes containing rare scenarios are duplicated
+- Each duplicate gets new randomized weather
+- Scenario parameters (like distance) are varied within 10%
+- Multiple scenarios in one route all count toward their respective quotas
+
+Adapted from https://github.com/autonomousvision/carla_garage
+
+Typical usage:
+    python balance_scenarios.py --path-in data/routes --num-samples 150
+"""
+
 import argparse
 import glob
 import random
@@ -6,13 +38,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-
-"""
-This scipt is used to balance out the dataset so that we have NUM_SAMPLES routes from each scenario.
-(or to generate the benchmarks where we comment out the upsampling part)
-It also generates a plot with the number of scenarios in the original and the upsampled dataset.
-Adapted from https://github.com/autonomousvision/carla_garage
-"""
 
 argparser = argparse.ArgumentParser()
 argparser.add_argument('--seed', default=1, type=int, help='Seed for random number generator.')
@@ -23,11 +48,24 @@ argparser.add_argument('--max-scenarios', default=1, type=int, help='Maximum num
 argparser.add_argument('--easy-weather', default=False, action='store_true', help='Use easy weather.')
 args = argparser.parse_args()
 
+# Create output directory with balanced dataset
 args.save_path = f'{args.path_in}_balanced_{args.num_samples}'
 Path(args.save_path).mkdir(parents=True, exist_ok=True)
 random.seed(args.seed)
 
 def get_random_weather_values():
+    """Generate randomized weather parameter values for route diversity.
+
+    Selects random weather values from predefined ranges to create varied driving
+    conditions. Supports both 'easy' weather (limited variation) and full weather
+    (wide range of conditions including extreme weather).
+
+    Returns:
+        tuple: (weather_values_begin, weather_values_end, weather_params)
+            - weather_values_begin: List of weather values at route start
+            - weather_values_end: List of weather values at route end
+            - weather_params: List of parameter names
+    """
 
     weather_params = ["route_percentage", "cloudiness", "precipitation", "precipitation_deposits", "wetness", "wind_intensity", "sun_azimuth_angle", "sun_altitude_angle", "fog_density"]
     if args.easy_weather:
@@ -61,17 +99,23 @@ def get_random_weather_values():
 
     return weather_values_begin, weather_values_end, weather_params
 
+# Find all route XML files in the input directory
 all_xml_paths = glob.glob(f'{args.path_in}/**/*.xml', recursive=True)
-scenarios_count = {}
-scenarios_routes = {}
 
-num_xmls = 0 #len(all_xml_paths) - 1
+# Dictionary to track scenario counts and which routes contain each scenario
+scenarios_count = {}  # scenario_name -> count
+scenarios_routes = {}  # scenario_name -> list of route file paths
 
+num_xmls = 0  # Counter for output XML files
+
+# First pass: Count existing scenarios and group routes by scenario type
 for route in all_xml_paths:
     tree = ET.parse(route)
     root = tree.getroot()
-    # iterate over all routes
+
+    # Iterate over all route elements in the XML file
     for route_id in root.iter('route'):
+        # Handle routes with no scenarios
         if len(route_id.find('scenarios')) == 0:
             scenario_name = 'None'
             if scenario_name in scenarios_count:
@@ -80,7 +124,8 @@ for route in all_xml_paths:
             else:
                 scenarios_count[scenario_name] = 1
                 scenarios_routes[scenario_name] = [route]
-        # get all information as dict
+
+        # Count each scenario in the route
         for scenario in route_id.find('scenarios').iter('scenario'):
             scenario_name = scenario.attrib['type']
             if scenario_name in scenarios_count:
@@ -90,20 +135,23 @@ for route in all_xml_paths:
                 scenarios_count[scenario_name] = 1
                 scenarios_routes[scenario_name] = [route]
 
-# pretty print sorted by number of scenarios
+# Print original scenario distribution (sorted by count, descending)
 for scenario_name, count in sorted(scenarios_count.items(), key=lambda x: x[1], reverse=True):
     print(f'{scenario_name}: {count}')
 
 
 
-upsampled_scenario_nums = {}
-paths_per_scenario = {}
-none_already_upsampled = False
-count_paths = {} # each unique route should also be max used args.num_samples times
+# Tracking dictionaries for upsampling process
+upsampled_scenario_nums = {}  # Track how many times each scenario has been added
+paths_per_scenario = {}  # Track which route paths are used for each scenario
+none_already_upsampled = False  # Flag to ensure 'None' scenario is only processed once
+count_paths = {}  # Track how many times each unique route file is used (limit: args.num_samples)
 
-# sort scenarios_routes by number of routes
+# Sort scenarios by number of routes (ascending) to process rarest scenarios first
+# This ensures rare scenarios get priority access to routes
 scenarios_routes = {k: v for k, v in sorted(scenarios_routes.items(), key=lambda item: len(item[1]), reverse=False)}
 
+# Main upsampling loop: Process each scenario type to reach target count
 for scenario_name, routes in scenarios_routes.items():
     print(f'Upsampling {scenario_name}')
     print(f'Number of routes: {len(routes)}')

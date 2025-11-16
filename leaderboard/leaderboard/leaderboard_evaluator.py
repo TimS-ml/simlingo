@@ -5,10 +5,27 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-CARLA Challenge Evaluator Routes
+"""CARLA Challenge Evaluator Routes - Main Evaluation Entry Point
 
-Provisional code to evaluate Autonomous Agents for the CARLA Autonomous Driving challenge
+This module provides the main evaluation framework for the CARLA Autonomous Driving
+Leaderboard. It orchestrates the complete evaluation pipeline including:
+
+- Setting up the CARLA simulation environment (client, world, traffic manager)
+- Loading and configuring autonomous agents from user-provided implementations
+- Executing driving routes with scenarios and traffic
+- Managing sensors and data collection
+- Computing performance statistics and metrics
+- Handling crashes, timeouts, and error conditions
+
+The LeaderboardEvaluator class is the main entry point that coordinates all evaluation
+activities across multiple routes and repetitions. It handles both the simulation
+setup/teardown and the execution of individual route scenarios.
+
+Typical usage:
+    python leaderboard_evaluator.py --routes=routes.xml --agent=path/to/agent.py
+
+This is the server-based version that connects to a CARLA server instance.
+For local evaluation, see leaderboard_evaluator_local.py.
 """
 from __future__ import print_function
 
@@ -35,20 +52,43 @@ from leaderboard.utils.statistics_manager import StatisticsManager, FAILURE_MESS
 from leaderboard.utils.route_indexer import RouteIndexer
 
 
+# Mapping from CARLA sensor types to their icon identifiers for visualization.
+# This is used to track and display which sensors an agent is using during evaluation.
 sensors_to_icons = {
-    'sensor.camera.rgb':        'carla_camera',
-    'sensor.lidar.ray_cast':    'carla_lidar',
-    'sensor.other.radar':       'carla_radar',
-    'sensor.other.gnss':        'carla_gnss',
-    'sensor.other.imu':         'carla_imu',
-    'sensor.opendrive_map':     'carla_opendrive_map',
-    'sensor.speedometer':       'carla_speedometer'
+    'sensor.camera.rgb':        'carla_camera',        # RGB camera sensor
+    'sensor.lidar.ray_cast':    'carla_lidar',         # LiDAR ray-casting sensor
+    'sensor.other.radar':       'carla_radar',         # Radar sensor
+    'sensor.other.gnss':        'carla_gnss',          # GPS/GNSS sensor
+    'sensor.other.imu':         'carla_imu',           # Inertial Measurement Unit
+    'sensor.opendrive_map':     'carla_opendrive_map', # HD map in OpenDRIVE format
+    'sensor.speedometer':       'carla_speedometer'    # Vehicle speedometer
 }
 
 class LeaderboardEvaluator(object):
-    """
-    Main class of the Leaderboard. Everything is handled from here,
-    from parsing the given files, to preparing the simulation, to running the route.
+    """Main orchestrator for CARLA Leaderboard evaluation.
+
+    This class is the central coordinator for the entire evaluation pipeline. It manages:
+    - CARLA simulation client connection and world loading
+    - Agent instantiation and lifecycle management
+    - Scenario execution across multiple routes
+    - Sensor validation and configuration
+    - Statistics collection and error handling
+    - Traffic manager configuration
+
+    The evaluator runs routes sequentially, setting up the environment for each route,
+    executing the scenario with the agent, collecting metrics, and cleaning up afterwards.
+    It handles various failure modes including agent crashes, simulation timeouts, and
+    invalid sensor configurations.
+
+    Attributes:
+        client_timeout (float): Maximum time in seconds to wait for CARLA client responses
+        frame_rate (float): Simulation update frequency in Hz (20 Hz = 0.05s per tick)
+        world: Reference to the CARLA world object
+        manager: ScenarioManager instance that handles scenario execution
+        sensors: List of sensor configurations requested by the agent
+        agent_instance: The instantiated autonomous agent being evaluated
+        route_scenario: Current RouteScenario being executed
+        statistics_manager: Tracks and computes evaluation metrics
     """
 
     # Tunable parameters
@@ -56,9 +96,28 @@ class LeaderboardEvaluator(object):
     frame_rate = 20.0      # in Hz
 
     def __init__(self, args, statistics_manager):
-        """
-        Setup CARLA client and world
-        Setup ScenarioManager
+        """Initialize the leaderboard evaluator and set up the simulation environment.
+
+        This constructor performs the following initialization steps:
+        1. Connects to the CARLA server and configures synchronous mode
+        2. Sets up the traffic manager with deterministic behavior
+        3. Dynamically loads the agent module from the provided path
+        4. Creates the ScenarioManager for handling route execution
+        5. Initializes watchdogs and signal handlers for timeout management
+
+        Args:
+            args: Parsed command-line arguments containing:
+                - host: CARLA server IP address
+                - port: CARLA server port number
+                - traffic_manager_port: Port for the traffic manager
+                - timeout: Maximum allowed time for operations
+                - agent: Path to the agent Python file
+                - debug: Debug level for verbose output
+            statistics_manager: StatisticsManager instance for tracking metrics
+
+        Raises:
+            ImportError: If CARLA version is incompatible (< 0.9.10.1)
+            ConnectionError: If unable to connect to CARLA server
         """
         self.world = None
         self.manager = None
@@ -78,12 +137,14 @@ class LeaderboardEvaluator(object):
         # Setup the simulation
         self.client, self.client_timeout, self.traffic_manager = self._setup_simulation(args)
 
+        # Verify CARLA version compatibility (except for leaderboard custom builds)
         dist = pkg_resources.get_distribution("carla")
         if dist.version != 'leaderboard':
             if LooseVersion(dist.version) < LooseVersion('0.9.10'):
                 raise ImportError("CARLA version 0.9.10.1 or newer required. CARLA version found: {}".format(dist))
 
-        # Load agent
+        # Dynamically load the agent module from the provided path
+        # This allows users to provide custom agent implementations
         module_name = os.path.basename(args.agent).split('.')[0]
         sys.path.insert(0, os.path.dirname(args.agent))
         self.module_agent = importlib.import_module(module_name)
@@ -130,8 +191,23 @@ class LeaderboardEvaluator(object):
         return False
 
     def _cleanup(self):
-        """
-        Remove and destroy all actors
+        """Clean up all resources after route execution.
+
+        This method performs comprehensive cleanup to ensure no resources are leaked
+        between routes. It handles:
+        - Stopping and destroying the agent instance
+        - Removing all scenario actors from the world
+        - Cleaning up the CarlaDataProvider
+        - Stopping any active watchdog timers
+        - Destroying all remaining sensor actors
+
+        The cleanup is performed in a specific order to prevent dependencies issues.
+        Errors during cleanup are caught and logged but don't prevent the rest of
+        the cleanup from proceeding.
+
+        Note:
+            This method should be called after each route execution, whether it
+            succeeded or failed, to ensure a clean slate for the next route.
         """
         CarlaDataProvider.cleanup()
 
@@ -163,8 +239,31 @@ class LeaderboardEvaluator(object):
             sensor.destroy()
 
     def _setup_simulation(self, args):
-        """
-        Prepares the simulation by getting the client, and setting up the world and traffic manager settings
+        """Prepare and configure the CARLA simulation environment.
+
+        Sets up the simulation with synchronous mode for deterministic execution.
+        This includes:
+        - Creating a CARLA client connection to the server
+        - Configuring synchronous mode with fixed time steps
+        - Enabling deterministic ragdoll physics for consistency
+        - Setting up the traffic manager in hybrid physics mode
+
+        Args:
+            args: Command-line arguments containing:
+                - host: CARLA server hostname or IP
+                - port: CARLA server port
+                - traffic_manager_port: Port for traffic manager
+                - timeout: Client timeout value in seconds
+
+        Returns:
+            tuple: (client, client_timeout, traffic_manager)
+                - client: Connected CARLA client instance
+                - client_timeout: Configured timeout value
+                - traffic_manager: Configured TrafficManager instance
+
+        Note:
+            Synchronous mode ensures the simulation only advances when explicitly
+            ticked, providing deterministic behavior crucial for fair evaluation.
         """
         client = carla.Client(args.host, args.port)
         if args.timeout:
@@ -205,8 +304,27 @@ class LeaderboardEvaluator(object):
             self.traffic_manager.set_hybrid_physics_mode(False)
 
     def _load_and_wait_for_world(self, args, town):
-        """
-        Load a new CARLA world without changing the settings and provide data to CarlaDataProvider
+        """Load a CARLA town/map and configure it for the scenario.
+
+        This method loads the specified CARLA map and configures it with the
+        necessary settings for large maps and provides world data to the
+        CarlaDataProvider singleton. It also:
+        - Resets all traffic lights to their default state
+        - Configures tile streaming for large maps
+        - Sets the traffic manager random seed for reproducibility
+        - Validates the loaded map matches the expected one
+
+        Args:
+            args: Command-line arguments containing traffic_manager_seed
+            town: Name of the CARLA town/map to load (e.g., 'Town01', 'Town02')
+
+        Raises:
+            Exception: If the loaded map doesn't match the requested town name.
+                This can happen if the CARLA server has the wrong map loaded.
+
+        Note:
+            Large map settings (tile_stream_distance, actor_active_distance) are
+            reset to 650 as they get overridden when loading a new world.
         """
         self.world = self.client.load_world(town, reset_settings=False)
 
@@ -233,8 +351,24 @@ class LeaderboardEvaluator(object):
                             " This scenario requires the use of map {}".format(town))
 
     def _register_statistics(self, route_index, entry_status, crash_message=""):
-        """
-        Computes and saves the route statistics
+        """Compute and save evaluation statistics for the current route.
+
+        This method finalizes the statistics collection for a route by computing
+        metrics based on the scenario execution data. It saves both the route's
+        completion status and detailed performance metrics.
+
+        Args:
+            route_index (int): Index of the route in the route configuration file
+            entry_status (str): Final status of the route execution, one of:
+                - "Started": Route began execution
+                - "Finished": Route completed successfully
+                - "Failed": Route failed due to errors
+            crash_message (str, optional): Description of any crash/error that occurred.
+                Defaults to empty string for successful executions.
+
+        Note:
+            This method should be called exactly once per route execution, after
+            the route has finished (successfully or not).
         """
         print("\033[1m> Registering the route statistics\033[0m")
         self.statistics_manager.save_entry_status(entry_status)
@@ -243,11 +377,44 @@ class LeaderboardEvaluator(object):
         )
 
     def _load_and_run_scenario(self, args, config):
-        """
-        Load and run the scenario given by config.
+        """Load and execute a single route scenario with the autonomous agent.
 
-        Depending on what code fails, the simulation will either stop the route and
-        continue from the next one, or report a crash and stop.
+        This is the main execution method for a single route. It handles the complete
+        lifecycle of a route execution:
+
+        1. World Loading: Loads the CARLA map specified in the config
+        2. Scenario Creation: Creates the RouteScenario with waypoints and events
+        3. Agent Setup: Instantiates and configures the autonomous agent
+        4. Sensor Validation: Validates agent's sensor configuration against track rules
+        5. Scenario Execution: Runs the agent through the route
+        6. Statistics Collection: Records performance metrics
+        7. Cleanup: Destroys actors and cleans up resources
+
+        The method implements comprehensive error handling at each stage. Depending on
+        the type of failure, it either:
+        - Continues to the next route (agent initialization failures)
+        - Stops the entire evaluation (simulation crashes)
+
+        Args:
+            args: Command-line arguments containing:
+                - host, port: CARLA connection parameters
+                - agent_config: Path to agent configuration file
+                - track: Competition track (SENSORS or MAP)
+                - debug: Debug output level
+                - record: Path to save CARLA recording
+            config: RouteConfiguration object containing:
+                - name: Route identifier
+                - town: CARLA map name
+                - index: Route index in the configuration file
+                - repetition_index: Repetition number for this route
+
+        Returns:
+            bool: True if simulation crashed (should stop all evaluation),
+                  False otherwise (can continue to next route)
+
+        Raises:
+            The method catches and handles all exceptions internally, converting
+            them to appropriate status messages and return values.
         """
         crash_message = ""
         entry_status = "Started"
@@ -280,34 +447,43 @@ class LeaderboardEvaluator(object):
 
         # Set up the user's agent, and the timer to avoid freezing the simulation
         try:
+            # Start watchdog timer to detect if agent setup hangs or takes too long
             self._agent_watchdog = Watchdog(args.timeout)
             self._agent_watchdog.start()
+
+            # Dynamically get the agent class name and instantiate it
             agent_class_name = getattr(self.module_agent, 'get_entry_point')()
             agent_class_obj = getattr(self.module_agent, agent_class_name)
 
             # Start the ROS1 bridge server only for ROS1 based agents.
+            # The server is shared across all routes to avoid reconnection issues.
             if getattr(agent_class_obj, 'get_ros_version')() == 1 and self._ros1_server is None:
                 from leaderboard.autoagents.ros1_agent import ROS1Server
                 self._ros1_server = ROS1Server()
                 self._ros1_server.start()
 
+            # Create agent instance and provide it with the route plan
             self.agent_instance = agent_class_obj(args.host, args.port, args.debug)
             self.agent_instance.set_global_plan(self.route_scenario.gps_route, self.route_scenario.route)
             self.agent_instance.setup(args.agent_config)
 
-            # Check and store the sensors
+            # Check and store the sensors (only once for the first route)
+            # Sensor configuration is assumed to be the same across all routes
             if not self.sensors:
                 self.sensors = self.agent_instance.sensors()
                 track = self.agent_instance.track
 
+                # Validate that the sensor suite is legal for the selected track
                 validate_sensor_configuration(self.sensors, track, args.track)
 
+                # Save sensor configuration for statistics reporting
                 self.sensor_icons = [sensors_to_icons[sensor['type']] for sensor in self.sensors]
                 self.statistics_manager.save_sensors(self.sensor_icons)
                 self.statistics_manager.write_statistics()
 
                 self.sensors_initialized = True
 
+            # Stop the watchdog - agent setup completed successfully
             self._agent_watchdog.stop()
             self._agent_watchdog = None
 
@@ -375,8 +551,36 @@ class LeaderboardEvaluator(object):
         return crash_message == "Simulation crashed"
 
     def run(self, args):
-        """
-        Run the challenge mode
+        """Execute the complete leaderboard evaluation across all routes.
+
+        This is the main evaluation loop that processes all routes specified in the
+        configuration file. It handles:
+        - Route indexing and iteration
+        - Resume functionality from checkpoints
+        - Sequential execution of all routes and their repetitions
+        - Progress tracking and statistics writing
+        - Global statistics computation
+        - Graceful shutdown including ROS1 bridge cleanup
+
+        The evaluation runs until either:
+        - All routes have been completed
+        - A simulation crash occurs (unrecoverable error)
+
+        Args:
+            args: Command-line arguments containing:
+                - routes: Path to XML file with route configurations
+                - repetitions: Number of times to repeat each route
+                - routes_subset: Optional subset of routes to execute
+                - resume: Whether to resume from a checkpoint
+                - checkpoint: Path to checkpoint file for resume/statistics
+
+        Returns:
+            bool: True if evaluation was stopped due to a crash, False if completed
+                  successfully. This is used for the exit code of the program.
+
+        Note:
+            The method automatically saves progress after each route, allowing
+            resumption from the last completed route if the evaluation is interrupted.
         """
         route_indexer = RouteIndexer(args.routes, args.repetitions, args.routes_subset)
 
@@ -419,6 +623,27 @@ class LeaderboardEvaluator(object):
         return crashed
 
 def main():
+    """Main entry point for the CARLA leaderboard evaluation system.
+
+    This function handles command-line argument parsing and orchestrates the complete
+    evaluation process. It:
+    1. Parses command-line arguments for CARLA connection, routes, and agent config
+    2. Creates the StatisticsManager for tracking evaluation metrics
+    3. Initializes the LeaderboardEvaluator
+    4. Runs the evaluation across all configured routes
+    5. Returns appropriate exit code based on success/failure
+
+    Exit codes:
+        0: Evaluation completed successfully
+        -1: Evaluation stopped due to simulation crash
+
+    Command-line arguments include:
+        --host, --port: CARLA server connection
+        --routes: XML file with route configurations
+        --agent: Path to agent implementation
+        --checkpoint: Path for saving/loading progress
+        See argument parser below for complete list
+    """
     description = "CARLA AD Leaderboard Evaluation: evaluate your Agent in CARLA scenarios\n"
 
     # general parameters

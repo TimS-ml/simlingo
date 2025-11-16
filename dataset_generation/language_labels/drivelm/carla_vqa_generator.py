@@ -1,3 +1,41 @@
+"""Language Labels: Generate DriveLM-Style Visual Question Answering Pairs
+
+This module generates Visual Question Answering (VQA) pairs for CARLA simulation data
+in the DriveLM format. VQA pairs consist of questions about the driving scene and their
+corresponding answers, enabling vision-language models to reason about driving scenarios.
+
+VQA generation process:
+1. Loads CARLA simulation data (RGB images, measurements, bounding boxes)
+2. Identifies key objects in the scene (vehicles, pedestrians, traffic elements)
+3. Generates diverse question types about the scene
+4. Produces accurate answers based on simulation ground truth
+5. Creates visual descriptions for object localization
+6. Applies template augmentation for linguistic diversity
+7. Saves VQA pairs as compressed JSON with image references
+
+Question types:
+- Perception: "What objects are visible?" "Where is the vehicle located?"
+- Prediction: "What will happen next?" "Is the vehicle turning?"
+- Planning: "What should the ego vehicle do?" "Is it safe to proceed?"
+- Behavior: "What is the vehicle doing?" "Is it moving or stationary?"
+- Spatial: "What is to the left/right/front?" "How far is the object?"
+- Attributes: "What color is the vehicle?" "What type of vehicle is it?"
+
+Key features:
+- DriveLM-compatible format with key objects and action descriptions
+- Template-based generation with GPT-4 augmentation support
+- Object visibility filtering using camera projection
+- Spatial reasoning for object localization (front/left/right, near/far)
+- Multi-turn QA chains for complex reasoning
+- Ground truth answers from CARLA simulator
+
+Typical usage:
+    python carla_vqa_generator.py
+
+Output:
+    database/simlingo/drivelm/**/*.json.gz - VQA pairs with key objects and metadata
+"""
+
 import os
 import glob
 import gzip
@@ -17,10 +55,6 @@ import re
 
 
 from dataset_generation.language_labels.utils import *
-
-"""
-Main class for processing and converting the pdm_lite dataset to the Graph-QAs for DriveLM-Carla.
-"""
 
 class QAsGenerator():
     # all_qa_pairs = []

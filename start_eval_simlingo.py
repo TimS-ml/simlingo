@@ -1,3 +1,33 @@
+"""
+SimLingo Model Evaluation Script for SLURM Clusters
+
+This script orchestrates distributed evaluation of SimLingo models on the Bench2Drive
+benchmark using SLURM job scheduling. It manages parallel job submission, monitors
+execution, and automatically resubmits failed evaluations.
+
+Main Features:
+- Distributed evaluation across multiple SLURM nodes
+- Automatic port allocation for CARLA servers
+- Job monitoring with dead job detection and cancellation
+- Automatic resubmission of failed jobs (configurable retry limit)
+- Progress tracking with tqdm progress bar
+- Support for multiple evaluation seeds and model configurations
+
+Benchmark Support:
+- Bench2Drive (220 routes)
+- Configurable evaluation seeds for statistical robustness
+
+Workflow:
+1. Load evaluation configurations (model checkpoints, routes, seeds)
+2. Create SLURM job submission scripts for each route
+3. Submit jobs with resource limits and port management
+4. Monitor running jobs and cancel crashed/hung jobs
+5. Resubmit failed jobs up to the retry limit
+6. Track progress until all evaluations complete
+
+Author: SimLingo Team
+"""
+
 # %%
 import os
 import subprocess
@@ -8,6 +38,18 @@ from tqdm.autonotebook import tqdm
 
 # %%
 def get_num_jobs(job_name, username):
+    """
+    Query SLURM for the number of running jobs and maximum allowed parallel jobs.
+
+    Args:
+        job_name (str): Job name pattern to search for
+        username (str): Username to filter jobs by
+
+    Returns:
+        tuple: (num_running_jobs, max_num_parallel_jobs)
+            - num_running_jobs (int): Current number of matching jobs in queue
+            - max_num_parallel_jobs (int): Max jobs allowed (from max_num_jobs.txt, default 1)
+    """
     len_usrn = len(username)
     num_running_jobs = int(
         subprocess.check_output(
@@ -24,6 +66,31 @@ def get_num_jobs(job_name, username):
 
 # %%
 def bash_file_bench2drive(job, port, tm_port, partition_name):
+    """
+    Generate SLURM job submission script for Bench2Drive evaluation.
+
+    Creates a bash script that:
+    - Activates the conda environment
+    - Sets up CARLA and repository paths
+    - Runs the leaderboard evaluator for a single route
+
+    Args:
+        job (dict): Job configuration containing route, model, and output paths
+        port (int): CARLA traffic manager port
+        tm_port (int): CARLA world port
+        partition_name (str): SLURM partition to submit to
+
+    Job Dictionary Keys:
+        - cfg: Configuration dict with model paths and settings
+        - route: Path to route XML file
+        - route_id: Unique route identifier
+        - seed: Random seed for evaluation
+        - viz_path: Path to save visualizations
+        - result_file: Path to save result JSON
+        - log_file: Path to save stdout log
+        - err_file: Path to save stderr log
+        - job_file: Path to save this job script
+    """
     cfg = job["cfg"]
     route = job["route"]
     route_id = job["route_id"]
@@ -80,12 +147,41 @@ python -u {cfg["repo_root"]}/Bench2Drive/leaderboard/leaderboard/leaderboard_eva
 
 # %%
 def get_running_jobs():
+    """
+    Get set of currently running SLURM job IDs for the current user.
+
+    Returns:
+        set: Set of job ID strings currently in the SLURM queue
+    """
     running_jobs = subprocess.check_output(f'squeue --me',shell=True).decode('utf-8').splitlines()
-    running_jobs = set(x.strip().split(" ")[0] for x in running_jobs[1:])
+    running_jobs = set(x.strip().split(" ")[0] for x in running_jobs[1:])  # Skip header line
     return running_jobs
 
 # %%
 def filter_completed(jobs):
+    """
+    Filter job list to remove successfully completed jobs and keep failed/running jobs.
+
+    Checks each job's result file to determine if it completed successfully.
+    Jobs are kept in the list if:
+    - They are currently running
+    - They failed or crashed
+    - Result file is missing or incomplete
+    - They have remaining retry attempts
+
+    Args:
+        jobs (list[dict]): List of job dictionaries
+
+    Returns:
+        list[dict]: Filtered list containing only jobs that need to run/rerun
+
+    Result File Validation:
+        Checks for various failure conditions including:
+        - Incomplete progress (progress[0] < progress[1])
+        - Failed agent setup
+        - Simulation crashes
+        - Agent crashes
+    """
     filtered_jobs = []
 
     running_jobs = get_running_jobs()
@@ -134,6 +230,23 @@ def filter_completed(jobs):
 
 # %%
 def kill_dead_jobs(jobs):
+    """
+    Monitor running jobs and cancel those with fatal errors in their log files.
+
+    Scans job output logs for error patterns indicating crashes or timeouts,
+    then cancels those jobs via `scancel` to free up cluster resources.
+
+    Fatal Errors Detected:
+        - "Watchdog exception" - Job timed out
+        - "Engine crash handling finished; re-raising signal 11" - Unreal Engine crash
+        - "[91mStopping the route, the agent has crashed" - Agent crashed
+
+    Args:
+        jobs (list[dict]): List of job dictionaries with log_file paths
+
+    Side Effects:
+        Cancels SLURM jobs via `scancel` command if fatal errors detected
+    """
 
     running_jobs = get_running_jobs()
 
@@ -168,23 +281,27 @@ def kill_dead_jobs(jobs):
 
             subprocess.Popen(f"scancel {job_id}", shell=True)
 
+# ==================== Evaluation Configuration ====================
+# Configure your evaluation settings here.
+# You can add multiple configs to this list to evaluate different models sequentially.
 configs = [
     {
-    "agent": "simlingo",
-    "checkpoint": "/PATH/TO/REPO/outputs/simlingo/checkpoints/epoch=013.ckpt/pytorch_model.pt",
-    "benchmark": "bench2drive",
-    "route_path": "/PATH/TO/REPO/leaderboard/data/bench2drive_split",
-    "seeds": [1,2,3], # TODO: change depending on how many eval seeds you wanna run (paper uses one eval seed on three train seeds)
-    "tries": 2,
-    "out_root": "/PATH/TO/REPO/eval_results/Bench2Drive",
-    "carla_root": "~/software/carla0915",
-    "repo_root": "/PATH/TO/REPO",
-    "agent_file": "/PATH/TO/REPO/team_code/agent_simlingo.py",
-    "team_code": "team_code",
-    "agent_config": "not_used",
-    "username": "YOUR_USERNAME"
+    "agent": "simlingo",  # Agent name for identification
+    "checkpoint": "/PATH/TO/REPO/outputs/simlingo/checkpoints/epoch=013.ckpt/pytorch_model.pt",  # TODO: Path to model checkpoint
+    "benchmark": "bench2drive",  # Benchmark to evaluate on
+    "route_path": "/PATH/TO/REPO/leaderboard/data/bench2drive_split",  # TODO: Path to route XML files
+    "seeds": [1,2,3],  # TODO: Evaluation seeds (paper uses 1 eval seed on 3 train seeds)
+    "tries": 2,  # Number of retry attempts for failed routes
+    "out_root": "/PATH/TO/REPO/eval_results/Bench2Drive",  # TODO: Output directory for results
+    "carla_root": "~/software/carla0915",  # TODO: Path to CARLA installation
+    "repo_root": "/PATH/TO/REPO",  # TODO: Path to this repository
+    "agent_file": "/PATH/TO/REPO/team_code/agent_simlingo.py",  # TODO: Path to agent script
+    "team_code": "team_code",  # Team code directory name
+    "agent_config": "not_used",  # Agent config (not used for SimLingo)
+    "username": "YOUR_USERNAME"  # TODO: Your SLURM username
     }
-    ] # TODO: change to your paths and model, you can add multiple configs here, whch get evaluated after each other
+    ]
+# Note: Multiple configs will be evaluated sequentially
 
 
 # %%

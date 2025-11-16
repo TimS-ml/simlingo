@@ -5,12 +5,46 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-Welcome to CARLA scenario_runner
+"""CARLA Scenario Runner - Main Entry Point
 
-This is the main script to be executed when running a scenario.
-It loads the scenario configuration, loads the scenario and manager,
-and finally triggers the scenario execution.
+This module provides the main entry point for executing CARLA scenarios. It orchestrates
+the entire scenario lifecycle from initialization to cleanup, supporting multiple scenario
+types and execution modes.
+
+Key Features:
+    - Supports standard Python-based scenarios
+    - Compatible with OpenSCENARIO format (ASAM standard)
+    - Route-based scenario execution for autonomous driving benchmarks
+    - Autonomous agent integration for testing driving policies
+    - Synchronous and asynchronous simulation modes
+    - Comprehensive result reporting (stdout, file, JUnit, JSON)
+    - CARLA recorder integration for playback and analysis
+
+Typical Usage:
+    Execute a standard scenario:
+        $ python scenario_runner.py --scenario FollowLeadingVehicle_1 --reloadWorld
+
+    Run a route-based scenario with an agent:
+        $ python scenario_runner.py --route routes.xml --agent my_agent.py --sync
+
+    Execute an OpenSCENARIO file:
+        $ python scenario_runner.py --openscenario example.xosc
+
+Architecture:
+    The ScenarioRunner class manages the complete scenario execution pipeline:
+    1. CARLA client/server connection and version validation
+    2. World loading and synchronization setup
+    3. Ego vehicle spawning/attachment
+    4. Scenario instantiation from configuration
+    5. ScenarioManager coordination for scenario execution
+    6. Result analysis and reporting
+    7. Cleanup and resource deallocation
+
+Classes:
+    ScenarioRunner: Main orchestrator for scenario execution and management
+
+Functions:
+    main: Command-line interface and program entry point
 """
 
 from __future__ import print_function
@@ -61,23 +95,47 @@ MIN_CARLA_VERSION = '0.9.12'
 
 
 class ScenarioRunner(object):
+    """Core scenario execution orchestrator for CARLA simulation.
 
-    """
-    This is the core scenario runner module. It is responsible for
-    running (and repeating) a single scenario or a list of scenarios.
+    This class manages the complete lifecycle of scenario execution, from CARLA
+    connection setup through scenario instantiation, execution, and cleanup. It
+    serves as the primary interface between the user's scenario definitions and
+    the CARLA simulator.
 
-    Usage:
-    scenario_runner = ScenarioRunner(args)
-    scenario_runner.run()
-    del scenario_runner
+    The ScenarioRunner handles:
+        - CARLA client/server connection management
+        - World loading and simulation mode configuration (sync/async)
+        - Ego vehicle spawning or attachment to existing vehicles
+        - Scenario type detection and instantiation (standard/route/OpenSCENARIO)
+        - Autonomous agent integration and lifecycle management
+        - Traffic manager configuration and seed control
+        - Result collection, analysis, and export
+        - Graceful cleanup and resource deallocation
+
+    Attributes:
+        ego_vehicles (list): List of ego vehicle actors controlled by the agent/scenario
+        client_timeout (float): CARLA client connection timeout in seconds (default: 10.0)
+        wait_for_world (float): Maximum time to wait for world readiness in seconds (default: 20.0)
+        frame_rate (float): Simulation frame rate in Hz for synchronous mode (default: 20.0)
+        world (carla.World): Active CARLA world instance
+        manager (ScenarioManager): Scenario execution manager handling behavior trees
+        finished (bool): Flag indicating scenario completion status
+        agent_instance (AutonomousAgent): Instance of the autonomous agent being tested
+        module_agent (module): Imported Python module containing agent implementation
+
+    Example:
+        >>> args = parse_arguments()
+        >>> runner = ScenarioRunner(args)
+        >>> success = runner.run()
+        >>> runner.destroy()
     """
 
     ego_vehicles = []
 
     # Tunable parameters
-    client_timeout = 10.0  # in seconds
-    wait_for_world = 20.0  # in seconds
-    frame_rate = 20.0      # in Hz
+    client_timeout = 10.0  # in seconds - Maximum time to wait for CARLA server responses
+    wait_for_world = 20.0  # in seconds - Maximum time to wait for world initialization
+    frame_rate = 20.0      # in Hz - Fixed timestep for synchronous simulation mode
 
     # CARLA world and scenario handlers
     world = None
@@ -91,35 +149,55 @@ class ScenarioRunner(object):
     module_agent = None
 
     def __init__(self, args):
-        """
-        Setup CARLA client and world
-        Setup ScenarioManager
+        """Initialize the ScenarioRunner with CARLA client and configuration.
+
+        Sets up the connection to the CARLA server, validates the CARLA version,
+        loads the autonomous agent module (if specified), creates the scenario
+        manager, and registers signal handlers for graceful shutdown.
+
+        Args:
+            args (argparse.Namespace): Parsed command-line arguments containing:
+                - host (str): CARLA server hostname/IP
+                - port (int): CARLA server port
+                - timeout (float): Client timeout in seconds
+                - agent (str): Path to autonomous agent Python file
+                - debug (bool): Enable debug output
+                - sync (bool): Use synchronous simulation mode
+
+        Raises:
+            ImportError: If CARLA version is older than MIN_CARLA_VERSION
+            ImportError: If agent module cannot be loaded
+
+        Note:
+            Signal handlers are registered for SIGINT, SIGTERM, and SIGHUP (Unix only)
+            to enable graceful shutdown and cleanup.
         """
         self._args = args
 
         if args.timeout:
             self.client_timeout = float(args.timeout)
 
-        # First of all, we need to create the client that will send the requests
-        # to the simulator. Here we'll assume the simulator is accepting
-        # requests in the localhost at port 2000.
+        # Create CARLA client connection
+        # The client sends requests to the simulator server
         self.client = carla.Client(args.host, int(args.port))
         self.client.set_timeout(self.client_timeout)
+
+        # Validate CARLA version compatibility
         carla_version = get_carla_version()
         if carla_version < Version(MIN_CARLA_VERSION):
             raise ImportError("CARLA version {} or newer required. CARLA version found: {}".format(MIN_CARLA_VERSION, carla_version))
 
-        # Load agent if requested via command line args
-        # If something goes wrong an exception will be thrown by importlib (ok here)
+        # Load autonomous agent module if specified
+        # The agent implements the driving policy to be tested
         if self._args.agent is not None:
             module_name = os.path.basename(args.agent).split('.')[0]
             sys.path.insert(0, os.path.dirname(args.agent))
             self.module_agent = importlib.import_module(module_name)
 
-        # Create the ScenarioManager
+        # Create the ScenarioManager to handle scenario execution
         self.manager = ScenarioManager(self._args.debug, self._args.sync, self._args.timeout)
 
-        # Create signal handler for SIGINT
+        # Register signal handlers for graceful shutdown
         self._shutdown_requested = False
         if sys.platform != 'win32':
             signal.signal(signal.SIGHUP, self._signal_handler)
@@ -142,54 +220,85 @@ class ScenarioRunner(object):
             del self.client
 
     def _signal_handler(self, signum, frame):
-        """
-        Terminate scenario ticking when receiving a signal interrupt
+        """Handle system signals for graceful shutdown.
+
+        Called when the process receives SIGINT (Ctrl+C), SIGTERM, or SIGHUP signals.
+        Initiates a graceful shutdown by stopping the scenario and setting shutdown flag.
+
+        Args:
+            signum (int): Signal number received
+            frame: Current stack frame (unused)
         """
         self._shutdown_requested = True
         if self.manager:
             self.manager.stop_scenario()
 
     def _get_scenario_class_or_fail(self, scenario):
-        """
-        Get scenario class by scenario name
-        If scenario is not supported or not found, exit script
+        """Dynamically load and return scenario class by name.
+
+        Searches through all Python files in the scenarios directory and the
+        additional scenario file (if provided) to find a class matching the
+        scenario name. Uses dynamic import and introspection.
+
+        Args:
+            scenario (str): Name of the scenario class to load
+
+        Returns:
+            class: The scenario class matching the given name
+
+        Raises:
+            SystemExit: If scenario class is not found (exits with code -1)
+
+        Note:
+            Searches in srunner/scenarios/*.py and --additionalScenario file
         """
 
-        # Path of all scenario at "srunner/scenarios" folder + the path of the additional scenario argument
+        # Collect all scenario Python files from standard location and additional scenarios
         scenarios_list = glob.glob("{}/srunner/scenarios/*.py".format(os.getenv('SCENARIO_RUNNER_ROOT', "./")))
         scenarios_list.append(self._args.additionalScenario)
 
         for scenario_file in scenarios_list:
 
-            # Get their module
+            # Import the scenario module dynamically
             module_name = os.path.basename(scenario_file).split('.')[0]
             sys.path.insert(0, os.path.dirname(scenario_file))
             scenario_module = importlib.import_module(module_name)
 
-            # And their members of type class
+            # Search through all classes in the module
             for member in inspect.getmembers(scenario_module, inspect.isclass):
                 if scenario in member:
                     return member[1]
 
-            # Remove unused Python paths
+            # Clean up sys.path to avoid pollution
             sys.path.pop(0)
 
         print("Scenario '{}' not supported ... Exiting".format(scenario))
         sys.exit(-1)
 
     def _cleanup(self):
-        """
-        Remove and destroy all actors
+        """Clean up and destroy all scenario actors and reset simulation state.
+
+        Performs comprehensive cleanup including:
+        - Resetting synchronous mode to asynchronous (if applicable)
+        - Cleaning up scenario manager resources
+        - Cleaning up CarlaDataProvider singleton state
+        - Destroying ego vehicles (unless waitForEgo mode is active)
+        - Destroying autonomous agent instances
+
+        Note:
+            This method is idempotent - calling it multiple times is safe.
+            In waitForEgo mode, ego vehicles are NOT destroyed as they're
+            externally managed.
         """
         if self.finished:
             return
 
         self.finished = True
 
-        # Simulation still running and in synchronous mode?
+        # Reset synchronous mode if it was enabled
+        # This ensures CARLA returns to normal asynchronous operation
         if self.world is not None and self._args.sync:
             try:
-                # Reset to asynchronous mode
                 settings = self.world.get_settings()
                 settings.synchronous_mode = False
                 settings.fixed_delta_seconds = None
@@ -198,10 +307,13 @@ class ScenarioRunner(object):
             except RuntimeError:
                 sys.exit(-1)
 
+        # Clean up scenario manager resources
         self.manager.cleanup()
 
+        # Clean up global data provider state
         CarlaDataProvider.cleanup()
 
+        # Destroy ego vehicles (unless externally managed)
         for i, _ in enumerate(self.ego_vehicles):
             if self.ego_vehicles[i]:
                 if not self._args.waitForEgo and self.ego_vehicles[i] is not None and self.ego_vehicles[i].is_alive:
@@ -210,16 +322,30 @@ class ScenarioRunner(object):
                 self.ego_vehicles[i] = None
         self.ego_vehicles = []
 
+        # Clean up agent instance
         if self.agent_instance:
             self.agent_instance.destroy()
             self.agent_instance = None
 
     def _prepare_ego_vehicles(self, ego_vehicles):
-        """
-        Spawn or update the ego vehicles
+        """Spawn new ego vehicles or attach to existing ones.
+
+        Two modes of operation:
+        1. Normal mode (--waitForEgo not set): Spawns new ego vehicles at specified locations
+        2. Wait mode (--waitForEgo set): Searches for existing vehicles with matching role names
+           and attaches to them, waiting if necessary until they appear
+
+        Args:
+            ego_vehicles (list): List of ActorConfiguration objects specifying ego vehicle
+                                 properties (model, transform, rolename, color, category)
+
+        Note:
+            In wait mode, vehicles are reset to specified transform and zero velocity.
+            After preparation, performs a world tick/wait to synchronize state.
         """
 
         if not self._args.waitForEgo:
+            # Spawn new ego vehicles
             for vehicle in ego_vehicles:
                 self.ego_vehicles.append(CarlaDataProvider.request_new_actor(vehicle.model,
                                                                              vehicle.transform,
@@ -227,6 +353,7 @@ class ScenarioRunner(object):
                                                                              color=vehicle.color,
                                                                              actor_category=vehicle.category))
         else:
+            # Wait for and attach to existing ego vehicles
             ego_vehicle_missing = True
             while ego_vehicle_missing:
                 self.ego_vehicles = []
@@ -243,6 +370,7 @@ class ScenarioRunner(object):
                         ego_vehicle_missing = True
                         break
 
+            # Reset ego vehicle state to scenario starting conditions
             for i, _ in enumerate(self.ego_vehicles):
                 self.ego_vehicles[i].set_transform(ego_vehicles[i].transform)
                 self.ego_vehicles[i].set_target_velocity(carla.Vector3D())
@@ -250,7 +378,7 @@ class ScenarioRunner(object):
                 self.ego_vehicles[i].apply_control(carla.VehicleControl())
                 CarlaDataProvider.register_actor(self.ego_vehicles[i], ego_vehicles[i].transform)
 
-        # sync state
+        # Synchronize world state
         if CarlaDataProvider.is_sync_mode():
             self.world.tick()
         else:
@@ -317,14 +445,32 @@ class ScenarioRunner(object):
             json.dump(criteria_dict, fp, sort_keys=False, indent=4)
 
     def _load_and_wait_for_world(self, town, ego_vehicles=None):
-        """
-        Load a new CARLA world and provide data to CarlaDataProvider
+        """Load CARLA world and configure simulation mode.
+
+        Either loads a new world (if --reloadWorld is set) or uses the existing world.
+        Configures synchronous mode if requested and initializes the CarlaDataProvider
+        singleton with world references.
+
+        Args:
+            town (str): Name of the CARLA town/map to load (e.g., 'Town01', 'Town02')
+            ego_vehicles (list, optional): List of ego vehicle configurations for wait mode
+
+        Returns:
+            bool: True if world loaded successfully and map matches requirements,
+                  False if map mismatch detected
+
+        Note:
+            - In reloadWorld mode: Loads the specified map from scratch
+            - In waitForEgo mode: Waits for ego vehicles to appear before proceeding
+            - Synchronous mode is configured with fixed_delta_seconds based on frame_rate
+            - CarlaDataProvider is initialized as the global data access point
         """
 
         if self._args.reloadWorld:
+            # Load a fresh instance of the requested map
             self.world = self.client.load_world(town)
         else:
-            # if the world should not be reloaded, wait at least until all ego vehicles are ready
+            # Use existing world, but wait for ego vehicles if required
             ego_vehicle_found = False
             if self._args.waitForEgo:
                 while not ego_vehicle_found and not self._shutdown_requested:
@@ -342,21 +488,25 @@ class ScenarioRunner(object):
 
         self.world = self.client.get_world()
 
+        # Configure synchronous mode if requested
+        # In sync mode, simulation only advances when world.tick() is called
         if self._args.sync:
             settings = self.world.get_settings()
             settings.synchronous_mode = True
             settings.fixed_delta_seconds = 1.0 / self.frame_rate
             self.world.apply_settings(settings)
 
+        # Initialize global data provider with world references
         CarlaDataProvider.set_client(self.client)
         CarlaDataProvider.set_world(self.world)
 
-        # Wait for the world to be ready
+        # Perform initial tick to ensure world is ready
         if CarlaDataProvider.is_sync_mode():
             self.world.tick()
         else:
             self.world.wait_for_tick()
 
+        # Validate that the loaded map matches scenario requirements
         map_name = CarlaDataProvider.get_map().name.split('/')[-1]
         if map_name not in (town, "OpenDriveMap"):
             print("The CARLA server uses the wrong map: {}".format(map_name))
@@ -366,14 +516,44 @@ class ScenarioRunner(object):
         return True
 
     def _load_and_run_scenario(self, config):
-        """
-        Load and run the scenario given by config
+        """Execute a complete scenario from initialization to cleanup.
+
+        This is the main scenario execution pipeline that:
+        1. Loads the CARLA world and validates map compatibility
+        2. Instantiates the autonomous agent (if specified)
+        3. Configures traffic manager with deterministic seed
+        4. Prepares ego vehicles (spawn or attach)
+        5. Instantiates the appropriate scenario type (OpenSCENARIO/Route/Standard)
+        6. Executes the scenario via ScenarioManager
+        7. Analyzes and reports results
+        8. Cleans up all actors and resources
+
+        Args:
+            config (ScenarioConfiguration): Configuration object containing:
+                - town: Map name to load
+                - ego_vehicles: List of ego vehicle configurations
+                - name: Scenario identifier
+                - type: Scenario class name (for standard scenarios)
+
+        Returns:
+            bool: True if scenario completed successfully, False on any error
+
+        Note:
+            Supports three scenario types:
+            - OpenSCENARIO (.xosc files using ASAM standard)
+            - Route scenarios (XML-defined waypoint routes)
+            - Standard Python scenarios (custom scenario classes)
+
+            If --record is enabled, saves full simulation log and criteria data.
         """
         result = False
+
+        # Load the world and validate map compatibility
         if not self._load_and_wait_for_world(config.town, config.ego_vehicles):
             self._cleanup()
             return False
 
+        # Instantiate autonomous agent if specified
         if self._args.agent:
             agent_class_name = self.module_agent.__name__.title().replace('_', '')
             try:
@@ -385,27 +565,34 @@ class ScenarioRunner(object):
                 self._cleanup()
                 return False
 
+        # Configure traffic manager for background vehicles
         CarlaDataProvider.set_traffic_manager_port(int(self._args.trafficManagerPort))
         tm = self.client.get_trafficmanager(int(self._args.trafficManagerPort))
-        tm.set_random_device_seed(int(self._args.trafficManagerSeed))
+        tm.set_random_device_seed(int(self._args.trafficManagerSeed))  # Deterministic behavior
         if self._args.sync:
             tm.set_synchronous_mode(True)
 
         # Prepare scenario
         print("Preparing scenario: " + config.name)
         try:
+            # Spawn or attach ego vehicles
             self._prepare_ego_vehicles(config.ego_vehicles)
+
+            # Instantiate scenario based on type
             if self._args.openscenario:
+                # OpenSCENARIO: ASAM standard scenario format
                 scenario = OpenScenario(world=self.world,
                                         ego_vehicles=self.ego_vehicles,
                                         config=config,
                                         config_file=self._args.openscenario,
                                         timeout=100000)
             elif self._args.route:
+                # Route scenario: Waypoint-based navigation challenge
                 scenario = RouteScenario(world=self.world,
                                          config=config,
                                          debug_mode=self._args.debug)
             else:
+                # Standard scenario: Python-defined scenario class
                 scenario_class = self._get_scenario_class_or_fail(config.type)
                 scenario = scenario_class(world=self.world,
                                           ego_vehicles=self.ego_vehicles,
@@ -420,19 +607,20 @@ class ScenarioRunner(object):
             return False
 
         try:
+            # Start CARLA recorder if requested
             if self._args.record:
                 recorder_name = "{}/{}/{}.log".format(
                     os.getenv('SCENARIO_RUNNER_ROOT', "./"), self._args.record, config.name)
                 self.client.start_recorder(recorder_name, True)
 
-            # Load scenario and run it
+            # Execute scenario via behavior tree
             self.manager.load_scenario(scenario, self.agent_instance)
             self.manager.run_scenario()
 
-            # Provide outputs if required
+            # Generate result reports
             self._analyze_scenario(config)
 
-            # Remove all actors, stop the recorder and save all criterias (if needed)
+            # Cleanup actors and stop recording
             scenario.remove_all_actors()
             if self._args.record:
                 self.client.stop_recorder()

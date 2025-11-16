@@ -1,5 +1,17 @@
-"""
-Child of the autopilot that additionally runs data collection and storage.
+"""Data Collection Agent - Extends Autopilot with Dataset Generation.
+
+This module implements the DataAgent class which extends the AutoPilot agent to
+add comprehensive data collection and storage capabilities. It records sensor data,
+3D bounding boxes, and scene metadata for training vision-based driving models.
+
+The agent collects:
+- RGB camera images (with optional augmentation for data diversity)
+- LiDAR point clouds (compressed LAZ format)
+- 3D bounding boxes for all actors (vehicles, pedestrians, traffic signs)
+- Scene metadata (weather, road topology, traffic light states)
+- Optional auxiliary data (semantic segmentation, depth, BEV maps)
+
+Data is saved in a structured format compatible with offline training pipelines.
 """
 
 import cv2
@@ -26,35 +38,71 @@ from agents.tools.misc import (is_within_distance, get_trafficlight_trigger_loca
 from agents.navigation.local_planner import LocalPlanner
 
 
-# from: https://medium.com/codex/rgb-to-color-names-in-python-the-robust-way-ec4a9d97a01f
+# RGB to color name conversion utility
+# Reference: https://medium.com/codex/rgb-to-color-names-in-python-the-robust-way-ec4a9d97a01f
 from scipy.spatial import KDTree
 from webcolors import (
     CSS2_HEX_TO_NAMES,
     hex_to_rgb,
 )
+
 def convert_rgb_to_names(rgb_tuple):
-    
-    # a dictionary of all the hex and their respective names in css3
+    """Convert RGB color values to nearest CSS3 color name.
+
+    Uses K-D tree to find the closest named color in CSS3 color space
+    to the given RGB value. Useful for generating textual descriptions
+    of vehicle colors.
+
+    Args:
+        rgb_tuple: Tuple of (R, G, B) values in range [0, 255]
+
+    Returns:
+        str: Name of the closest CSS3 color (e.g., 'red', 'blue', 'silver')
+    """
+    # Build K-D tree of CSS3 color space
     css3_db = CSS2_HEX_TO_NAMES
     names = []
     rgb_values = []
     for color_hex, color_name in css3_db.items():
         names.append(color_name)
         rgb_values.append(hex_to_rgb(color_hex))
-    
+
+    # Find nearest neighbor in color space
     kdt_db = KDTree(rgb_values)
     distance, index = kdt_db.query(rgb_tuple)
     return f'{names[index]}'
 
 
 def get_entry_point():
+    """Entry point for CARLA leaderboard to instantiate DataAgent.
+
+    Returns:
+        str: Name of the agent class
+    """
     return 'DataAgent'
 
 
 class DataAgent(AutoPilot):
+    """Data collection agent that extends AutoPilot with dataset recording.
+
+    This agent inherits from AutoPilot to maintain expert driving behavior while
+    simultaneously recording all sensor data and scene information needed for
+    training. It includes sophisticated 3D bounding box extraction with rich
+    metadata (color, lights, road topology, etc.).
+
+    Key features:
+        - Multi-camera RGB recording with optional augmentation
+        - LiDAR point cloud recording (10Hz, compressed LAZ format)
+        - 3D bounding box extraction for all actors
+        - Rich metadata: weather, road topology, traffic state
+        - BEV semantic map generation for auxiliary training tasks
+        - LiDAR hit counting for occlusion filtering
+
+    Attributes:
+        save_path: Root directory for saved data
+        SAVE_TF_LABELS: Whether to save auxiliary labels (semantic, depth, BEV)
+        ss_bev_manager: BEV semantic map renderer
     """
-                Child of the autopilot that additionally runs data collection and storage.
-                """
 
     def setup(self, path_to_conf_file, route_index=None, traffic_manager=None):
         super().setup(path_to_conf_file, route_index, traffic_manager=None)
@@ -471,8 +519,33 @@ class DataAgent(AutoPilot):
         return next_wps
 
     def get_bounding_boxes(self, lidar=None):
+        """Extract 3D bounding boxes and metadata for all actors in the scene.
+
+        This comprehensive method collects bounding boxes and rich metadata for:
+        - Ego vehicle
+        - Other vehicles (with color, lights, next action, cut-in detection)
+        - Pedestrians (with demographics and lane position)
+        - Traffic lights and stop signs (with state and affectsEgo)
+        - Static objects (parked cars, construction warnings)
+        - Landmarks (road signs with text/value)
+        - Weather information
+        - Ego vehicle road context (lane count, markings, hazards)
+
+        Each bounding box includes position/orientation in ego coordinates,
+        LiDAR hit count for occlusion filtering, and scenario-specific metadata
+        for language grounding.
+
+        Args:
+            lidar: LiDAR point cloud in ego coordinates (optional). If provided,
+                   computes LiDAR hits per bbox for occlusion filtering.
+
+        Returns:
+            list: List of dictionaries, one per detected object/entity.
+                Each dict contains class, position, extent, metadata fields.
+        """
         results = []
 
+        # Get ego vehicle state in world coordinates
         ego_transform = self._vehicle.get_transform()
         ego_control = self._vehicle.get_control()
         ego_velocity = self._vehicle.get_velocity()
@@ -1363,15 +1436,23 @@ class DataAgent(AutoPilot):
         return results
 
     def get_points_in_bbox(self, vehicle_pos, vehicle_yaw, extent, lidar):
+        """Count LiDAR points inside a 3D bounding box.
+
+        Transforms the LiDAR point cloud into the object's coordinate frame and
+        counts how many points fall within the 3D bounding box. This is used to:
+        1. Filter out occluded objects (few/no LiDAR hits)
+        2. Validate bounding box labels
+        3. Measure object visibility
+
+        Args:
+            vehicle_pos: Position of object center in ego coordinates [x, y, z]
+            vehicle_yaw: Orientation of object in radians (yaw angle)
+            extent: Bounding box half-extents [extent_x, extent_y, extent_z]
+            lidar: LiDAR point cloud in ego coordinates, shape [N, 3]
+
+        Returns:
+            int: Number of LiDAR points inside the bounding box
         """
-                Checks for a given vehicle in ego coordinate system, how many LiDAR hit there are in its bounding box.
-                :param vehicle_pos: Relative position of the vehicle w.r.t. the ego
-                :param vehicle_yaw: Relative orientation of the vehicle w.r.t. the ego
-                :param extent: List, Extent of the bounding box
-                :param lidar: LiDAR point cloud
-                :return: Returns the number of LiDAR hits within the bounding box of the
-                vehicle
-                """
 
         rotation_matrix = np.array([[np.cos(vehicle_yaw), -np.sin(vehicle_yaw), 0.0],
                                                                 [np.sin(vehicle_yaw), np.cos(vehicle_yaw), 0.0], [0.0, 0.0, 1.0]])

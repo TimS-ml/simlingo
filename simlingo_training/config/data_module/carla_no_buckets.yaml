@@ -1,3 +1,8 @@
+# CARLA dataset configuration without bucketed sampling
+# Uses uniform random sampling across all driving scenarios
+# Simpler than bucketed sampling but may result in imbalanced training data
 
 defaults:
-  - driving
+  - driving  # Base driving configuration
+
+# No train_partitions defined - all data is sampled uniformly at random

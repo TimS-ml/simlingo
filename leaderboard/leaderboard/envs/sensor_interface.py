@@ -1,3 +1,26 @@
+"""Sensor interface and data management for CARLA autonomous agents.
+
+This module provides the infrastructure for managing sensor data collection and delivery
+in the CARLA Leaderboard. It handles:
+
+1. Sensor Registration: Creating and attaching sensors to the ego vehicle
+2. Data Collection: Receiving sensor callbacks from CARLA
+3. Data Synchronization: Ensuring all sensors provide data for the same frame
+4. Data Format: Converting CARLA sensor data to numpy arrays
+5. Pseudo-sensors: Handling special sensors like speedometer and HD map
+
+Key Components:
+    - SensorInterface: Main class that agents use to receive sensor data
+    - CallBack: Handles sensor callbacks and data parsing
+    - BaseReader: Base class for pseudo-sensors (speedometer, HD map)
+    - SensorConfigurationInvalid: Exception for invalid sensor configurations
+    - SensorReceivedNoData: Exception for sensor timeout issues
+
+The sensor interface uses a queue-based system to collect data from all sensors and
+ensures frame synchronization before delivering data to the agent. This guarantees
+that all sensor readings correspond to the same simulation timestep.
+"""
+
 import copy
 import logging
 import numpy as np
@@ -14,9 +37,20 @@ from srunner.scenariomanager.timer import GameTime
 
 
 def threaded(fn):
+    """Decorator to run a function in a daemon thread.
+
+    This decorator wraps a function to execute it in a separate daemon thread,
+    which is useful for background sensor reading without blocking the main thread.
+
+    Args:
+        fn (callable): Function to execute in a thread
+
+    Returns:
+        callable: Wrapper function that starts fn in a daemon thread
+    """
     def wrapper(*args, **kwargs):
         thread = Thread(target=fn, args=args, kwargs=kwargs)
-        thread.setDaemon(True)
+        thread.setDaemon(True)  # Thread exits when main program exits
         thread.start()
 
         return thread
@@ -24,8 +58,15 @@ def threaded(fn):
 
 
 class SensorConfigurationInvalid(Exception):
-    """
-    Exceptions thrown when the sensors used by the agent are not allowed for that specific submissions
+    """Exception raised when sensor configuration violates competition rules.
+
+    This exception is thrown when:
+    - Sensors requested by the agent are not allowed for the declared track
+    - Duplicate sensor tags are detected
+    - Sensor parameters are invalid or missing
+
+    For example, requesting 'sensor.opendrive_map' while on SENSORS track
+    will raise this exception.
     """
 
     def __init__(self, message):
@@ -33,8 +74,16 @@ class SensorConfigurationInvalid(Exception):
 
 
 class SensorReceivedNoData(Exception):
-    """
-    Exceptions thrown when the sensors used by the agent take too long to receive data
+    """Exception raised when a sensor fails to provide data within the timeout period.
+
+    This indicates that a sensor took longer than the configured timeout
+    (default 10 seconds) to send its data. Possible causes:
+    - CARLA server performance issues
+    - Network communication problems
+    - Sensor malfunction or misconfiguration
+    - Simulation overload
+
+    This typically results in route failure and requires investigation.
     """
 
     def __init__(self, message):
@@ -88,13 +137,37 @@ class BaseReader(object):
 
 
 class SpeedometerReader(BaseReader):
-    """
-    Sensor to measure the speed of the vehicle.
+    """Pseudo-sensor that provides vehicle forward speed measurements.
+
+    Unlike physical CARLA sensors (cameras, LiDAR), the speedometer is a pseudo-sensor
+    that queries the vehicle's physics state directly. It computes forward speed by
+    projecting the velocity vector onto the vehicle's forward direction.
+
+    The speedometer runs in a background thread and provides measurements at the
+    configured frequency (default 1 Hz). Connection attempts are retried up to 10 times
+    to handle temporary CARLA server communication issues.
+
+    Attributes:
+        MAX_CONNECTION_ATTEMPTS (int): Maximum retries for vehicle state queries
+
+    Returns:
+        dict: {'speed': float} where speed is in meters/second (m/s)
     """
     MAX_CONNECTION_ATTEMPTS = 10
 
     def _get_forward_speed(self, transform=None, velocity=None):
-        """ Convert the vehicle transform directly to forward speed """
+        """Convert vehicle velocity to forward speed along the heading direction.
+
+        Projects the 3D velocity vector onto the vehicle's forward direction vector
+        to get the scalar forward speed. This accounts for vehicle pitch and yaw.
+
+        Args:
+            transform (carla.Transform, optional): Vehicle transform. If None, queries vehicle.
+            velocity (carla.Vector3D, optional): Vehicle velocity. If None, queries vehicle.
+
+        Returns:
+            float: Forward speed in meters/second. Positive = forward, negative = reverse.
+        """
         if not velocity:
             velocity = self._vehicle.get_velocity()
         if not transform:
@@ -196,31 +269,120 @@ class CallBack(object):
 
 
 class SensorInterface(object):
+    """Central manager for sensor data collection and synchronization.
+
+    This class is the main interface between agents and CARLA sensors. It handles:
+    - Registering sensors and creating callbacks
+    - Collecting data from multiple sensors asynchronously
+    - Synchronizing data to ensure all sensors provide data for the same frame
+    - Delivering sensor data bundles to agents
+
+    The interface uses a thread-safe queue to collect sensor data as it arrives,
+    then waits until all sensors have reported data for the requested frame before
+    returning. This ensures temporal consistency across all sensor modalities.
+
+    Frame Synchronization:
+        The interface blocks until ALL registered sensors provide data for the
+        requested frame. The timeout (default 10s) prevents indefinite blocking
+        if a sensor fails. The OpenDRIVE map sensor is treated specially as it
+        doesn't update per-frame.
+
+    Attributes:
+        _sensors_objects (dict): Registered sensors keyed by tag
+        _data_buffers (Queue): Thread-safe queue for incoming sensor data
+        _queue_timeout (int): Maximum seconds to wait for sensor data
+        _opendrive_tag (str): Tag of HD map sensor (if any)
+
+    Example:
+        # Typically used inside AutonomousAgent
+        sensor_interface = SensorInterface()
+        # Sensors are registered automatically during setup
+        # Get synchronized data for current frame
+        data = sensor_interface.get_data(GameTime.get_frame())
+        # data = {'Left': (frame, numpy_array), 'LIDAR': (frame, points), ...}
+    """
+
     def __init__(self):
-        self._sensors_objects = {}
-        self._data_buffers = Queue()
-        self._queue_timeout = 10
+        """Initialize the sensor interface with empty sensor registry and data queue."""
+        self._sensors_objects = {}  # Registered sensors
+        self._data_buffers = Queue()  # Thread-safe queue for sensor data
+        self._queue_timeout = 10  # Max seconds to wait for sensor data
 
         # Only sensor that doesn't get the data on tick, needs special treatment
+        # HD map is static and doesn't need frame synchronization
         self._opendrive_tag = None
 
     def register_sensor(self, tag, sensor_type, sensor):
+        """Register a sensor with the interface.
+
+        This method is called when a sensor is created and attached to the vehicle.
+        It stores the sensor reference and handles special cases like the HD map sensor.
+
+        Args:
+            tag (str): Unique identifier for this sensor (from sensors() method)
+            sensor_type (str): CARLA sensor type (e.g., 'sensor.camera.rgb')
+            sensor (object): CARLA sensor actor or pseudo-sensor object
+
+        Raises:
+            SensorConfigurationInvalid: If a sensor with the same tag already exists
+        """
         if tag in self._sensors_objects:
             raise SensorConfigurationInvalid("Duplicated sensor tag [{}]".format(tag))
 
         self._sensors_objects[tag] = sensor
 
-        if sensor_type == 'sensor.opendrive_map': 
+        # HD map sensor is static and doesn't provide per-frame updates
+        if sensor_type == 'sensor.opendrive_map':
             self._opendrive_tag = tag
 
     def update_sensor(self, tag, data, frame):
+        """Receive and queue sensor data from a callback.
+
+        This method is called by sensor callbacks when new data arrives. It adds
+        the data to the queue along with the frame number for synchronization.
+
+        Args:
+            tag (str): Sensor identifier
+            data: Sensor measurement (numpy array, point cloud, etc.)
+            frame (int): Simulation frame number when data was captured
+
+        Raises:
+            SensorConfigurationInvalid: If sensor tag is not registered
+        """
         if tag not in self._sensors_objects:
             raise SensorConfigurationInvalid("The sensor with tag [{}] has not been created!".format(tag))
 
+        # Add to thread-safe queue: (tag, frame, data)
         self._data_buffers.put((tag, frame, data))
 
     def get_data(self, frame):
-        """Read the queue to get the sensors data"""
+        """Retrieve synchronized sensor data for a specific frame.
+
+        Blocks until all registered sensors provide data for the requested frame.
+        This ensures that agents receive temporally consistent sensor readings.
+
+        The method continuously polls the data queue until it has collected data
+        from all sensors (except the HD map) for the specified frame number.
+
+        Args:
+            frame (int): Simulation frame number to retrieve data for
+
+        Returns:
+            dict: Mapping from sensor tags to (frame, data) tuples:
+                {
+                    'Left': (frame_num, numpy_array),
+                    'LIDAR': (frame_num, point_cloud),
+                    'GPS': (frame_num, lat_lon_alt),
+                    ...
+                }
+
+        Raises:
+            SensorReceivedNoData: If any sensor fails to provide data within timeout
+
+        Note:
+            The HD map sensor (if present) is excluded from synchronization as it's
+            static and doesn't update per frame.
+        """
         try:
             data_dict = {}
             while len(data_dict.keys()) < len(self._sensors_objects.keys()):

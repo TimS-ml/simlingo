@@ -1,3 +1,26 @@
+"""Data Visualization Tool for CARLA Simulation Outputs.
+
+This module provides comprehensive visualization capabilities for CARLA simulation data,
+including:
+- 3D bounding box projection onto camera images
+- Top-down bird's-eye view visualization
+- Lane marking and road topology overlay
+- LiDAR point cloud visualization (BEV and projected onto images)
+- Multi-camera views with annotations
+
+The visualizations help analyze perception data, verify annotations, and debug
+autonomous driving systems.
+
+Usage:
+    python visualize.py -f <data_path> -m <map_path>
+
+Example:
+    python visualize.py -f /path/to/data -m ./maps/Town01_HD_map.npz
+
+Output:
+    Creates visualization images in a parallel directory structure with '-vis' suffix.
+"""
+
 import json
 import gzip
 import os
@@ -10,7 +33,9 @@ import matplotlib.cm as cm
 from tqdm import trange
 from utils import get_image_point, point_in_canvas_wh, edges, world_to_ego, get_forward_vector, calculate_cube_vertices, draw_dashed_line, vector_angle, get_weather_id
 
-def visualize_data(file_path, map_path, vis_bbox=True,  vis_top_down=True, vis_road=True, vis_lidar_bev=True, vis_lidar_to_back_image=True, vis_lidar_to_front_image=True, vis_lidar_to_front_left_image=True):
+def visualize_data(file_path, map_path, vis_bbox=True, vis_top_down=True, vis_road=True,
+                   vis_lidar_bev=True, vis_lidar_to_back_image=True,
+                   vis_lidar_to_front_image=True, vis_lidar_to_front_left_image=True):
     print(f'file_path={file_path}')
     print(f'map_path={map_path}')
 

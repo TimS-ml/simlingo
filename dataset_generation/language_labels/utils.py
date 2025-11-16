@@ -1,3 +1,30 @@
+"""Language Labels: Utility Functions for Visual and Scenario Processing
+
+This module provides utility functions for processing CARLA simulation data to generate
+language labels (commentary and VQA). It handles:
+- 3D to 2D projection for determining object visibility
+- Vehicle and object filtering based on visibility and relevance
+- Scenario name extraction from route files
+- Vehicle appearance description generation
+- Geometry utilities for spatial reasoning
+
+Key functionality:
+- Camera projection matrices and 3D->2D point projection
+- Bounding box corner projection for visibility checks
+- Vehicle filtering (visible, within distance, not parked, sufficient LiDAR points)
+- Traffic light state to text conversion
+- Color and vehicle type to natural language descriptions
+- Junction orientation reasoning for cross-traffic scenarios
+
+These utilities are used by:
+- carla_commentary_generator.py: For generating driving commentaries
+- carla_vqa_generator.py: For generating visual question-answering pairs
+- dreamer_generator.py: For generating action-conditioned driving instructions
+
+Typical usage:
+    from language_labels.utils import build_projection_matrix, should_consider_vehicle
+"""
+
 import numpy as np
 import cv2
 import re

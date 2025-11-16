@@ -1,5 +1,24 @@
-"""
-This script is used to visualize the dataset and merge RGB, LiDAR and BEV views as a sanity check.
+"""Dataset Visualization Tool - Multi-View Data Inspection and Sanity Checks.
+
+This script provides visualization utilities for inspecting the collected CARLA
+driving dataset. It merges multiple sensor modalities (RGB, LiDAR, BEV) into
+unified visualizations for quality assurance and debugging.
+
+The visualization overlays:
+- RGB camera images
+- LiDAR bird's-eye-view (BEV) occupancy maps
+- BEV semantic segmentation maps
+- Ground truth waypoints and bounding boxes
+- Predicted waypoints (if available from model)
+- Target points and navigation commands
+
+This is primarily used for:
+1. Dataset quality assurance during data collection
+2. Debugging data loading pipeline issues
+3. Verifying coordinate system transformations
+4. Inspecting ground truth labels
+
+The script can be run standalone to generate visualization montages for dataset samples.
 """
 
 from copy import deepcopy

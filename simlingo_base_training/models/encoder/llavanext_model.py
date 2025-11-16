@@ -1,3 +1,22 @@
+"""Custom LLaVA-Next model wrapper for SimLingo vision encoding.
+
+This module extends HuggingFace's LlavaNextForConditionalGeneration to provide
+custom image processing for the SimLingo-Base training pipeline.
+
+Key Modifications:
+    - Custom forward_image method for multi-frame, multi-camera input
+    - Support for global image patch (optional)
+    - Downsampling of feature grids to reduce memory
+    - Batch processing of temporal and camera dimensions
+
+The wrapper reuses LLaVA-Next's pretrained vision tower but adapts the forward
+pass to handle the specific input format required for autonomous driving.
+
+Dependencies:
+    - Transformers: Base LLaVA-Next implementation
+    - PyTorch: Neural network operations
+"""
+
 import torch
 from torch.nn import functional as F
 from transformers import LlavaNextForConditionalGeneration
@@ -10,6 +29,15 @@ from typing import Optional, Tuple, Union
 
 
 class LingoLlavaNextModel(LlavaNextForConditionalGeneration):
+    """Custom LLaVA-Next model for SimLingo image encoding.
+
+    Extends HuggingFace LLaVA-Next to handle multi-frame, multi-camera driving
+    data with optional global image patches and feature downsampling.
+
+    Attributes:
+        use_global_img: Whether to include global image patch.
+        (All other attributes inherited from LlavaNextForConditionalGeneration)
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.use_global_img = None

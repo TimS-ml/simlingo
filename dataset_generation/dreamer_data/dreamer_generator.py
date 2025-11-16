@@ -1,8 +1,47 @@
-"""
-This script generates the dreamer labels for the SimLingo paper.
-Known problems:
- - lane changes on highways when there is a barriere between oncoming and ego lane
- - sometimes too early towards static object for crashes -> cuts turns and if there is a barriere it doesnt work
+"""Dreamer Data: Generate Action-Conditioned Driving Instruction Dataset
+
+This module generates the Dreamer dataset for SimLingo, which consists of natural language
+driving instructions paired with corresponding vehicle trajectories and safety assessments.
+The dataset enables training models that can follow language instructions or critique
+unsafe driving commands.
+
+Dreamer dataset generation process:
+1. Loads CARLA simulation data (measurements, routes, boxes)
+2. Generates alternative trajectories using kinematic bicycle model
+3. Creates diverse driving instructions (lane changes, speed adjustments, crashes)
+4. Forecasts waypoints for each instruction using PID controllers
+5. Evaluates safety (collisions, speed limits, legal lane changes)
+6. Pairs instructions with waypoints and safety labels
+7. Saves instruction-trajectory-safety tuples as compressed JSON
+
+Instruction types:
+- Lane changes: Relative (1 lane left), absolute (2nd lane from left), by type (parking)
+- Speed control: Faster, slower, stop, target speed (e.g., "drive at 30 km/h")
+- Collisions: Crash into objects, drive over lines, hit pedestrians
+- Route deviations: Follow expert route vs. deviate from it
+
+Safety evaluation:
+- Static collision detection (buildings, barriers, traffic signs)
+- Dynamic collision detection (vehicles, pedestrians)
+- Speed limit compliance
+- Pedestrian proximity warnings
+- Legal lane change validation (no opposing traffic, no sidewalk)
+
+Key components:
+- CarlaAlternativeCreator: Main class for trajectory generation
+- KinematicBicycleModel: Physics-based motion forecasting
+- LateralPIDController: Steering control for waypoint following
+- LongitudinalLinearRegressionController: Speed control
+
+Known limitations:
+- Lane changes on highways with barriers between oncoming and ego lanes
+- Early crash trajectory computation can cut corners near barriers
+
+Typical usage:
+    python dreamer_generator.py
+
+Output:
+    database/simlingo/dreamer/**/*.json.gz - Instruction-trajectory-safety samples
 """
 
 import glob

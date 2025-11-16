@@ -1,6 +1,27 @@
-"""
-Utilities to render bird's eye view semantic segmentation maps.
-Code adapted from https://github.com/zhejz/carla-roach
+"""Bird's-Eye-View Semantic Map Rendering - ChauffeurNet Style.
+
+This module renders top-down semantic segmentation maps of the driving scene,
+similar to those used in ChauffeurNet (Bansal et al., 2019). These BEV maps
+provide a compact scene representation for learning-based driving models.
+
+The renderer creates multi-channel BEV maps containing:
+- Road geometry (lanes, lane markings, crosswalks)
+- Dynamic objects (vehicles, pedestrians)
+- Traffic elements (traffic lights with states, stop signs)
+- Route information (waypoints, navigation commands)
+
+Rendered BEV maps are used for:
+1. Auxiliary training tasks (semantic segmentation loss)
+2. Visualization and debugging during data collection
+3. Offline dataset inspection
+
+The rendering uses OpenCV for efficient rasterization of 2D polygons representing
+roads, lanes, and bounding boxes projected to the ground plane.
+
+Code adapted from: https://github.com/zhejz/carla-roach
+
+Classes:
+    ObsManager: Main BEV map renderer coordinating all rendering components
 """
 
 import numpy as np

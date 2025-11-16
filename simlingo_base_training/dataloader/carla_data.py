@@ -1,7 +1,23 @@
-"""
-Code that loads the dataset for training.
-partially taken from https://github.com/autonomousvision/carla_garage/blob/main/team_code/data.py
-(MIT licence)
+"""CARLA dataset loader for SimLingo-Base training.
+
+This module provides the main dataset class for loading CARLA autonomous driving
+simulation data. It handles loading images, measurements, and labels from disk,
+applying augmentations, and preparing batches for training.
+
+Key Features:
+    - Loads camera images and vehicle measurements from CARLA recordings
+    - Applies data augmentation (camera shifts, image transforms)
+    - Processes waypoints and routes for training
+    - Handles temporal sequences of frames
+
+Attribution:
+    Partially adapted from https://github.com/autonomousvision/carla_garage
+    (MIT License)
+
+Dependencies:
+    - OpenCV: Image loading and processing
+    - NumPy: Array operations
+    - BaseDataset: Parent class with core functionality
 """
 
 import numpy as np
@@ -10,20 +26,65 @@ import cv2
 
 from simlingo_base_training.dataloader.dataset_base import BaseDataset
 
-VIZ_DATA = False
+VIZ_DATA = False  # Debug flag for data visualization
 
 class CARLA_Data(BaseDataset):  # pylint: disable=locally-disabled, invalid-name
-    """
-    Custom dataset that dynamically loads a CARLA dataset from disk.
+    """PyTorch Dataset for CARLA driving simulation data.
+
+    Loads and processes driving data from CARLA simulator recordings, including
+    camera images, vehicle measurements, and navigation routes. Inherits common
+    functionality from BaseDataset.
+
+    Attributes:
+        All attributes inherited from BaseDataset including:
+        - images: List of image file paths
+        - measurements: List of measurement file paths
+        - sample_start: Starting frame indices for each sample
+        - augment_exists: Flags indicating if augmented data exists
+
+    Note:
+        This class is specifically for the base SimLingo training pipeline,
+        which focuses on vision-only waypoint prediction.
     """
 
     def __init__(self,
             **cfg,
         ):
+        """Initialize the CARLA dataset.
+
+        Args:
+            **cfg: Configuration parameters passed to BaseDataset including:
+                - data_path: Path to dataset directory
+                - split: 'train' or 'val'
+                - hist_len: Number of historical frames
+                - pred_len: Number of future waypoints to predict
+                - img_augmentation: Whether to apply image augmentations
+                - And many more configuration options
+        """
         super().__init__(**cfg, base=True)
 
     def __getitem__(self, index):
-        """Returns the item at index idx. """
+        """Get a single training example by index.
+
+        Loads all necessary data for one training sample including camera images,
+        measurements, waypoints, and routes. Applies augmentation if configured.
+
+        Args:
+            index: Index of the sample to load.
+
+        Returns:
+            dict: Dictionary containing:
+                - 'rgb': Processed camera images, shape [T, N, C, H, W]
+                - 'speed': Current vehicle speed
+                - 'waypoints': Future waypoints for prediction
+                - 'route': Navigation route points
+                - 'target_point': Target waypoint for navigation
+                - 'map_route': Route representation for model input
+                - And additional metadata
+
+        Note:
+            Disables OpenCV threading for compatibility with PyTorch dataloaders.
+        """
         # Disable threading because the data loader will already split in threads.
         cv2.setNumThreads(0)
 

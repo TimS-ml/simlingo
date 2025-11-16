@@ -1,3 +1,38 @@
+"""Route Management: Split Long CARLA Routes into Smaller Segments
+
+This module splits long CARLA Leaderboard 2.0 routes into smaller route segments,
+each containing a predefined number of scenarios. This is essential for creating
+manageable training/validation datasets where each route file contains a controlled
+number of driving scenarios.
+
+Key features:
+- Splits routes based on scenario count (configurable via --max-scenarios)
+- Generates random weather conditions for each route segment
+- Computes precise route start/end points relative to scenario triggers
+- Handles scenario-specific distance requirements (e.g., junction completion)
+- Outputs route XML files compatible with CARLA ScenarioRunner
+- Generates statistics and visualizations of route lengths
+
+The script connects to a running CARLA server to:
+- Load the appropriate town/map
+- Use GlobalRoutePlanner for path interpolation
+- Check junction locations and traffic lights
+- Validate lane change possibilities
+
+Adapted from https://github.com/autonomousvision/carla_garage with modifications:
+- Custom weather parameter generation
+- Support for multiple routes per XML file
+- Scenario-specific distance calculations
+
+Prerequisites:
+    - CARLA server must be running: ./CarlaUE4.sh --world-port=PORT -RenderOffScreen -nosound
+    - Input route XML file from CARLA Leaderboard
+
+Typical usage:
+    python split_route_files.py --path-in leaderboard/data/routes.xml \
+                                  --save-path data/training --max-scenarios 1
+"""
+
 import argparse
 import json
 import os
@@ -16,13 +51,6 @@ from xml.dom import minidom
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 from agents.navigation.local_planner import RoadOption
 from srunner.tools.scenario_helper import get_same_dir_lanes
-
-"""
-This script is used to split the long routes provided by CARLA Leaderboard 2.0 into smaller ones,
-which only contain a predefined number of scenarios per route.
-Adapted from https://github.com/autonomousvision/carla_garage
-changes: how we generate the weather parameters, added functionality of having multiple routes in one file
-"""
 argparser = argparse.ArgumentParser()
 argparser.add_argument('--seed', default=1, type=int, help='Seed for random number generator.')
 argparser.add_argument('--path-in', default='leaderboard/data/parking_lane/Town12_short.xml', type=str, help='Input path of the route that should be split.')
@@ -68,33 +96,64 @@ possible_scenario_types = []
 pathlib.Path(path_xml).mkdir(parents=True, exist_ok=True)
 
 #################################################################################################################################################
-# Client and general setup
+# Connect to CARLA server and initialize map/route planner
 #################################################################################################################################################
 
-client=carla.Client('localhost', args.port)
+# Connect to CARLA simulator
+client = carla.Client('localhost', args.port)
 client.set_timeout(240)
 
+# Parse input route XML to determine which town/map to load
 tree = ET.parse(args.path_in)
 town = list(tree.iter("route"))[0].attrib['town']
 
 print('Loading town:', town)
 
+# Get world and load appropriate town if needed
 world = client.get_world()
 print("World loaded.")
 if town not in world.get_map().name:
     world = client.load_world(town)
 
+# Initialize map and route planner for path interpolation
 print("Getting map.")
 carla_map = world.get_map()
 print("Map loaded.")
-grp_1 = GlobalRoutePlanner(carla_map, 1.0)
+grp_1 = GlobalRoutePlanner(carla_map, 1.0)  # 1 meter sampling resolution
 
 #################################################################################################################################################
-# Class that saves all information about a route 
-# Scenarios and waypoints are sorted in trace, trace_type, trace_elem 
+# Route class: Stores all information about a CARLA route
+# - Parses route XML data (waypoints, scenarios, weather)
+# - Creates interpolated trace using GlobalRoutePlanner
+# - Sorts scenarios into the trace at their trigger locations
 #################################################################################################################################################
 
 class Route():
+    """Represents a CARLA route with waypoints, scenarios, weather, and interpolated trace.
+
+    This class extends route data with detailed path interpolation and scenario integration.
+    It processes XML route data and creates a complete trace that includes:
+    - Original waypoints defining the route
+    - Interpolated points along valid road paths
+    - Scenario trigger locations
+    - Road commands (lane follow, turn, etc.)
+    - Junction flags for each position
+
+    Attributes:
+        weather_params (list): Names of weather parameters
+        ranges_per_param (dict): Value ranges for randomized weather generation
+        weather_values_begin (list): Weather values at route start
+        weather_values_end (list): Weather values at route end
+        route_town (str): CARLA town/map name
+        waypoints (np.ndarray): Key waypoints defining the route
+        scenarios (list): Scenario XML elements
+        scenario_trigger_points (np.ndarray): 3D locations where scenarios trigger
+        trace (np.ndarray): Complete interpolated path
+        trace_type (np.ndarray): Type of each trace point ('waypoint', 'trace', 'scenario')
+        trace_elem (list): Associated XML element for each point
+        trace_cmds (list): Road command for each trace point
+        is_junction (np.ndarray): Boolean flag indicating if each point is in a junction
+    """
     weather_params = ["route_percentage", "cloudiness", "precipitation", "precipitation_deposits", "wetness", "wind_intensity", "sun_azimuth_angle", "sun_altitude_angle", "fog_density"]
     if random_weather:
         # random weather values
@@ -263,14 +322,27 @@ print("Routes parsed.")
 # plt.clf()
 
 #################################################################################################################################################
-# Individual distances before and last scenario trigger location
+# Distance calculation: Minimum distance before first scenario trigger
+# This ensures the vehicle has enough space to accelerate to proper speed before the scenario begins
 #################################################################################################################################################
 
 def get_previous_distance(scenario_type):
+    """Get minimum distance (in meters) needed before a scenario trigger point.
+
+    Different scenarios require different approach distances to ensure the vehicle
+    reaches appropriate speed and positioning before the scenario triggers.
+
+    Args:
+        scenario_type (str): The type of scenario (e.g., 'HardBreakRoute', 'HighwayExit')
+
+    Returns:
+        int: Minimum distance in meters before scenario trigger point
+    """
+    # High-speed scenarios need more approach distance
     if scenario_type == 'HardBreakRoute' or scenario_type == 'HighwayExit':
         return 50
     else:
-        return 20
+        return 20  # Default approach distance
 
 #################################################################################################################################################
 # calculate waypoints x meters before first scenario trigger location (that vehicle can speed up)
@@ -305,7 +377,9 @@ def get_previous_waypoints(route_idx, first_scenario_idx):
     return l_indices[::-1]
 
 
-# try to set the distance 10m more than the scenario lasts
+# Dictionary mapping scenario types to required distance (in meters) after the scenario trigger.
+# These values ensure the vehicle drives far enough to complete the scenario plus a safety margin.
+# Values are tuned per scenario type based on typical scenario duration and required completion distance.
 distance_after = {
     'Accident': 86,                      
     'AccidentTwoWays': 86,                

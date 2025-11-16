@@ -1,9 +1,43 @@
+"""ResNet vision encoder for SimLingo-Base.
+
+This module provides a ResNet-based vision encoder as an alternative to LLaVA-Next.
+It uses a pretrained ResNet from HuggingFace and projects features to the desired
+embedding dimension.
+
+Key Features:
+    - Uses HuggingFace pretrained ResNet models
+    - Adds temporal and camera positional encodings
+    - Projects features to match language model dimension
+    - Supports freezing encoder weights for efficient training
+
+Advantages over LLaVA-Next:
+    - Faster inference (simpler architecture)
+    - Lower memory footprint
+    - Well-suited for real-time applications
+
+Dependencies:
+    - Transformers: For pretrained ResNet models
+    - PyTorch: Neural network framework
+"""
+
 import numpy as np
 import torch
 from torch import nn
 from transformers import AutoModel, LlavaNextProcessor
 
 class ResnetEncoderModel(nn.Module):
+    """ResNet-based vision encoder for camera images.
+
+    Encodes camera images into token embeddings using a pretrained ResNet,
+    adding temporal and camera positional encodings for multi-camera, multi-frame input.
+
+    Attributes:
+        image_encoder: Pretrained ResNet from HuggingFace.
+        projection: Linear projection to target embedding dimension.
+        temporal_encoding: Learnable temporal position embeddings.
+        camera_encoding: Learnable camera position embeddings.
+        token_size: Output embedding dimension.
+    """
     def __init__(self,
         variant: str, 
         embed_dim: int,

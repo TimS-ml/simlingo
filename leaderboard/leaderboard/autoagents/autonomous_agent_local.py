@@ -3,8 +3,21 @@
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
 
-"""
-This module provides the base class for all autonomous agents
+"""Base class for autonomous driving agents - Local Evaluation Version
+
+This is the local variant of the autonomous agent base class with modifications
+for local/offline evaluation scenarios. Key differences from the standard version:
+
+1. Modified __init__ signature: Takes (path_to_conf_file, route_index) instead of
+   (carla_host, carla_port, debug) to support batch processing
+2. Enhanced set_global_plan: Stores both original dense routes and downsampled versions
+3. Modified run_step signature: Accepts additional sensors parameter
+
+The core interface remains the same - agents must still implement sensors(), run_step(),
+and setup() methods. This version is optimized for data collection and local testing
+where route indexing is important for organizing outputs.
+
+See autonomous_agent.py documentation for detailed usage information.
 """
 
 from __future__ import print_function
@@ -124,11 +137,27 @@ class AutonomousAgent(object):
         return -1
 
     def set_global_plan(self, global_plan_gps, global_plan_world_coord):
+        """Set the global route plan for the agent to follow (local version).
+
+        This local version stores both the original dense route and the downsampled
+        version. This is useful for data collection where you might need access to
+        the full high-resolution waypoint sequence.
+
+        Args:
+            global_plan_gps (list): List of (lat, lon) GPS waypoint tuples
+            global_plan_world_coord (list): List of (carla.Location, road_option) tuples
+
+        Attributes set:
+            self.org_dense_route_gps: Original full-resolution GPS route
+            self.org_dense_route_world_coord: Original full-resolution world route
+            self._global_plan: Downsampled GPS route (~200m spacing)
+            self._global_plan_world_coord: Downsampled world route (~200m spacing)
         """
-        Set the plan (route) for the agent
-        """
+        # Store original dense routes for agents that need high-resolution waypoints
         self.org_dense_route_gps = global_plan_gps
         self.org_dense_route_world_coord = global_plan_world_coord
+
+        # Also create downsampled version for efficient planning
         ds_ids = downsample_route(global_plan_world_coord, 200)
         self._global_plan_world_coord = [(global_plan_world_coord[x][0], global_plan_world_coord[x][1]) for x in ds_ids]
         self._global_plan = [global_plan_gps[x] for x in ds_ids]

@@ -1,3 +1,20 @@
+"""PyTorch Lightning DataModule for multi-task SimLingo training.
+
+This module orchestrates data loading for SimLingo's multi-task learning setup,
+combining:
+- Driving waypoint prediction datasets
+- Dreamer instruction following datasets
+- QA and commentary evaluation datasets
+
+Key Responsibilities:
+1. Dataset Setup: Instantiates multiple datasets with weighted sampling
+2. Data Preprocessing: Image/text preprocessing for InternVL2 vision-language model
+3. Batching: Custom collate function for heterogeneous multi-modal data
+
+The DataModule implements weighted random sampling to balance between different
+datasets and tasks during training, supporting flexible multi-task learning.
+"""
+
 # Standard library imports
 import itertools
 from typing import List
@@ -12,20 +29,52 @@ from torch.utils.data import DataLoader
 from transformers import AutoProcessor
 
 # Local/project specific imports
-# from simlingo_training.dataloader.dataset_driving import Data_Driving # is called directly by hydra.utils.instantiate, keeping here to make it easier to find
-# from simlingo_training.dataloader.dataset_dreamer import Data_Dreamer # is called directly by hydra.utils.instantiate, keeping here to make it easier to find
+# Datasets instantiated by Hydra based on config
+# from simlingo_training.dataloader.dataset_driving import Data_Driving
+# from simlingo_training.dataloader.dataset_dreamer import Data_Dreamer
 from simlingo_training.utils.custom_types import DrivingExample, DrivingInput, DrivingLabel, LanguageLabel
 from simlingo_training.utils.internvl2_utils import preprocess_image_batch, get_custom_chat_template, get_num_image_tokens_per_patch
 from simlingo_training.utils.projection import get_camera_intrinsics, get_camera_extrinsics
 
+
 def encode_uint8(strings: List[str], common_length: int) -> torch.Tensor:
+    """Encode list of strings as uint8 tensor with null-byte padding.
+
+    Args:
+        strings: List of strings to encode (e.g., file paths)
+        common_length: Target length (strings padded/truncated to this)
+
+    Returns:
+        Tensor of shape (len(strings), common_length) with uint8 encoded strings
+
+    Raises:
+        AssertionError: If any string exceeds common_length
+    """
     max_len = max(len(s) for s in strings)
     assert max_len <= common_length, f"String is too long: {max_len} > {common_length}"
+    # Pad strings with null bytes to common length
     padded_strings = [s.ljust(common_length, '\0') for s in strings]
     return torch.tensor([bytearray(s, 'utf-8') for s in padded_strings], dtype=torch.uint8)
 
 
 class DataModule(LightningDataModule):
+    """Lightning DataModule for multi-task autonomous driving with language.
+
+    This DataModule manages the entire data pipeline for SimLingo training:
+    - Sets up multiple datasets (driving, dreamer, QA) with weighted sampling
+    - Preprocesses images using InternVL2's image patching strategy
+    - Tokenizes multi-turn conversations with special waypoint tokens
+    - Batches heterogeneous data (images, text, waypoints, metadata)
+
+    The module supports flexible dataset composition via Hydra config, allowing
+    different combinations of tasks and sampling strategies.
+
+    Attributes:
+        processor: HuggingFace processor/tokenizer for text and images
+        tokenizer: Tokenizer with added special tokens for waypoints/routes
+        NUM_IMAGE_PATCHES: Number of patches per image (2 for 1x2 grid)
+        num_image_tokens_total: Total image tokens in language model input
+    """
     def __init__(
         self,
         base_dataset,
@@ -33,42 +82,72 @@ class DataModule(LightningDataModule):
         predict=False,
         **cfg,
     ):
+        """Initialize DataModule with configuration.
+
+        Args:
+            base_dataset: Base dataset configuration (DatasetBaseConfig)
+            processor: HuggingFace AutoProcessor for InternVL2
+            predict: Whether in prediction mode (vs train/val)
+            **cfg: Additional config parameters (batch_size, num_workers, etc.)
+        """
         super().__init__()
+        # Dynamically set attributes from config
         for key, value in cfg.items():
             setattr(self, key, value)
-            
+
+        # Set base dataset attributes
         for key, value in base_dataset.items():
             setattr(self, key, value)
-            
+
         self.cfg = cfg
         self.base_dataset = base_dataset
         self.processor = processor
         self.predict = predict
-        
+
         self.printed = False
 
-        self.NUM_IMAGE_PATCHES = 2
-        self.IMAGES_TO_CONSIDER = ['image_ff'] # front-forward image, other images are not supported
-        # taken from:
-        # https://github.com/OpenGVLab/InternVL/blob/9d3a709b16874e73ffdd38b9cf53296fae4589b9/internvl_chat/internvl/train/constants.py#L7
-        # https://github.com/OpenGVLab/InternVL/blob/9d3a709b16874e73ffdd38b9cf53296fae4589b9/internvl_chat/internvl/model/internvl_chat/modeling_internvl_chat.py#L294
+        # Image processing configuration (InternVL2 specific)
+        self.NUM_IMAGE_PATCHES = 2  # Split image into 1x2 grid
+        self.IMAGES_TO_CONSIDER = ['image_ff']  # Front-forward camera only
+
+        # InternVL2 special tokens for image regions
+        # Reference: https://github.com/OpenGVLab/InternVL
         self.IMG_START_TOKEN='<img>'
         self.IMG_END_TOKEN='</img>'
         self.IMG_CONTEXT_TOKEN='<IMG_CONTEXT>'
 
+        # Calculate total image tokens based on model variant
         self.num_image_tokens_per_patch = get_num_image_tokens_per_patch(self.encoder_variant)
         self.num_image_tokens_total = self.num_image_tokens_per_patch * self.NUM_IMAGE_PATCHES
-            
-        # add <WAYPOINT> token
+
+        # Extract tokenizer from processor
         if 'tokenizer' in self.processor.__dict__:
             self.tokenizer = self.processor.tokenizer
         else:
             self.tokenizer = self.processor
-        # TODO: not needed anymore?
-        self.tokenizer.add_special_tokens({'additional_special_tokens': ['<WAYPOINTS>','<WAYPOINTS_DIFF>', '<ORG_WAYPOINTS_DIFF>', '<ORG_WAYPOINTS>', '<WAYPOINT_LAST>', '<ROUTE>', '<ROUTE_DIFF>', '<TARGET_POINT>']})
+
+        # Add special tokens for waypoint/route placeholders in language
+        self.tokenizer.add_special_tokens({
+            'additional_special_tokens': [
+                '<WAYPOINTS>', '<WAYPOINTS_DIFF>', '<ORG_WAYPOINTS_DIFF>',
+                '<ORG_WAYPOINTS>', '<WAYPOINT_LAST>', '<ROUTE>',
+                '<ROUTE_DIFF>', '<TARGET_POINT>'
+            ]
+        })
+        # Left padding for decoder-only models
         self.tokenizer.padding_side = "left"
 
     def setup(self, stage=None):
+        """Set up datasets for training, validation, or prediction.
+
+        This method:
+        1. Instantiates datasets based on config (driving, dreamer, QA)
+        2. Creates weighted sampler for multi-task learning
+        3. Handles train/val splits with proper bucketing
+
+        Args:
+            stage: Lightning stage ('fit', 'validate', 'test', 'predict')
+        """
         if not self.predict:
             self.val_datasets = []
             sum_sample_weights = 1.0
@@ -229,6 +308,27 @@ class DataModule(LightningDataModule):
 
     @line_profiler.profile
     def dl_collate_fn(self, data):
+        """Custom collate function for batching multi-modal driving data.
+
+        This function handles the complex batching of:
+        - Multi-patch images (preprocessed for InternVL2)
+        - Multi-turn conversations with special tokens
+        - Waypoints and routes
+        - Placeholder values for dynamic token replacement
+        - Camera intrinsics/extrinsics
+
+        Args:
+            data: List of DatasetOutput objects from individual datasets
+
+        Returns:
+            DrivingExample containing batched inputs and labels
+
+        The collate function:
+        1. Preprocesses images into patches for InternVL2
+        2. Tokenizes conversations with chat template
+        3. Batches waypoints, routes, and metadata
+        4. Creates structured DrivingExample with all modalities
+        """
         BS = len(data)
         grid_nums = [self.NUM_IMAGE_PATCHES] # we split the front forward into two patches (1x2)
 

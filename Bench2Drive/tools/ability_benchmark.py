@@ -1,3 +1,23 @@
+"""Ability Benchmark Evaluator for Bench2Drive.
+
+This script evaluates autonomous driving performance across 5 key driving abilities:
+1. Overtaking - Navigating around obstacles and slow vehicles
+2. Merging - Joining traffic flows and lane changes
+3. Emergency_Brake - Reacting to sudden hazards
+4. Give_Way - Yielding to priority vehicles
+5. Traffic_Signs - Following traffic signals and signs
+
+The evaluator processes route results and computes ability-specific success rates
+using CARLA simulation and route planning.
+
+Usage:
+    python ability_benchmark.py -f <routes_file> -r <result_file> -t <host> -p <port>
+
+Example:
+    python ability_benchmark.py -f leaderboard/data/bench2drive220.xml \\
+                               -r eval/results.json -p 4000
+"""
+
 import json
 import carla
 import argparse
@@ -9,16 +29,42 @@ import subprocess
 import time
 import random
 
+# Mapping of driving abilities to their associated scenario types
 Ability = {
-    "Overtaking":['Accident', 'AccidentTwoWays', 'ConstructionObstacle', 'ConstructionObstacleTwoWays', 'HazardAtSideLaneTwoWays', 'HazardAtSideLane', 'ParkedObstacleTwoWays', 'ParkedObstacle', 'VehicleOpensDoorTwoWays'],
-    "Merging": ['CrossingBicycleFlow', 'EnterActorFlow', 'HighwayExit', 'InterurbanActorFlow', 'HighwayCutIn', 'InterurbanAdvancedActorFlow', 'MergerIntoSlowTrafficV2', 'MergerIntoSlowTraffic', 'NonSignalizedJunctionLeftTurn', 'NonSignalizedJunctionRightTurn', 'NonSignalizedJunctionLeftTurnEnterFlow', 'ParkingExit', 'SequentialLaneChange', 'SignalizedJunctionLeftTurn', 'SignalizedJunctionRightTurn', 'SignalizedJunctionLeftTurnEnterFlow'],
-    "Emergency_Brake": ['BlockedIntersection', 'DynamicObjectCrossing', 'HardBreakRoute', 'OppositeVehicleTakingPriority', 'OppositeVehicleRunningRedLight', 'ParkingCutIn', 'PedestrianCrossing', 'ParkingCrossingPedestrian', 'StaticCutIn', 'VehicleTurningRoute', 'VehicleTurningRoutePedestrian', 'ControlLoss'],
+    "Overtaking": ['Accident', 'AccidentTwoWays', 'ConstructionObstacle', 'ConstructionObstacleTwoWays',
+                   'HazardAtSideLaneTwoWays', 'HazardAtSideLane', 'ParkedObstacleTwoWays', 'ParkedObstacle',
+                   'VehicleOpensDoorTwoWays'],
+    "Merging": ['CrossingBicycleFlow', 'EnterActorFlow', 'HighwayExit', 'InterurbanActorFlow', 'HighwayCutIn',
+                'InterurbanAdvancedActorFlow', 'MergerIntoSlowTrafficV2', 'MergerIntoSlowTraffic',
+                'NonSignalizedJunctionLeftTurn', 'NonSignalizedJunctionRightTurn', 'NonSignalizedJunctionLeftTurnEnterFlow',
+                'ParkingExit', 'SequentialLaneChange', 'SignalizedJunctionLeftTurn', 'SignalizedJunctionRightTurn',
+                'SignalizedJunctionLeftTurnEnterFlow'],
+    "Emergency_Brake": ['BlockedIntersection', 'DynamicObjectCrossing', 'HardBreakRoute', 'OppositeVehicleTakingPriority',
+                        'OppositeVehicleRunningRedLight', 'ParkingCutIn', 'PedestrianCrossing', 'ParkingCrossingPedestrian',
+                        'StaticCutIn', 'VehicleTurningRoute', 'VehicleTurningRoutePedestrian', 'ControlLoss'],
     "Give_Way": ['InvadingTurn', 'YieldToEmergencyVehicle'],
-    "Traffic_Signs": ['BlockedIntersection', 'OppositeVehicleTakingPriority', 'OppositeVehicleRunningRedLight', 'PedestrianCrossing', 'VehicleTurningRoute', 'VehicleTurningRoutePedestrian', 'EnterActorFlow', 'CrossingBicycleFlow', 'NonSignalizedJunctionLeftTurn', 'NonSignalizedJunctionRightTurn', 'NonSignalizedJunctionLeftTurnEnterFlow', 'OppositeVehicleTakingPriority', 'OppositeVehicleRunningRedLight', 'PedestrianCrossing', 'SignalizedJunctionLeftTurn', 'SignalizedJunctionRightTurn', 'SignalizedJunctionLeftTurnEnterFlow', 'T_Junction', 'VanillaNonSignalizedTurn', 'VanillaSignalizedTurnEncounterGreenLight', 'VanillaSignalizedTurnEncounterRedLight', 'VanillaNonSignalizedTurnEncounterStopsign', 'VehicleTurningRoute', 'VehicleTurningRoutePedestrian']
+    "Traffic_Signs": ['BlockedIntersection', 'OppositeVehicleTakingPriority', 'OppositeVehicleRunningRedLight',
+                      'PedestrianCrossing', 'VehicleTurningRoute', 'VehicleTurningRoutePedestrian', 'EnterActorFlow',
+                      'CrossingBicycleFlow', 'NonSignalizedJunctionLeftTurn', 'NonSignalizedJunctionRightTurn',
+                      'NonSignalizedJunctionLeftTurnEnterFlow', 'OppositeVehicleTakingPriority',
+                      'OppositeVehicleRunningRedLight', 'PedestrianCrossing', 'SignalizedJunctionLeftTurn',
+                      'SignalizedJunctionRightTurn', 'SignalizedJunctionLeftTurnEnterFlow', 'T_Junction',
+                      'VanillaNonSignalizedTurn', 'VanillaSignalizedTurnEncounterGreenLight',
+                      'VanillaSignalizedTurnEncounterRedLight', 'VanillaNonSignalizedTurnEncounterStopsign',
+                      'VehicleTurningRoute', 'VehicleTurningRoutePedestrian']
 }
 
 def get_infraction_status(record):
-    for infraction,  value in record['infractions'].items():
+    """Check if a route record has any infractions (excluding minor speed infractions).
+
+    Args:
+        record: Route record dictionary containing infraction data.
+
+    Returns:
+        bool: True if the route has any significant infractions, False otherwise.
+    """
+    for infraction, value in record['infractions'].items():
+        # Skip minor speed infractions
         if infraction == "min_speed_infractions":
             continue
         elif len(value) > 0:
@@ -26,14 +72,27 @@ def get_infraction_status(record):
     return False
 
 def update_Ability(scenario_name, Ability_Statistic, status):
+    """Update ability statistics based on scenario success status.
+
+    Args:
+        scenario_name: Name of the scenario type.
+        Ability_Statistic: Dictionary tracking [successes, total_attempts] for each ability.
+        status: Boolean indicating if the scenario was successful.
+    """
     for ability, scenarios in Ability.items():
         if scenario_name in scenarios:
-            Ability_Statistic[ability][1] += 1
+            Ability_Statistic[ability][1] += 1  # Increment total attempts
             if status:
-                Ability_Statistic[ability][0] += 1
-    pass
+                Ability_Statistic[ability][0] += 1  # Increment successes
 
 def update_Success(scenario_name, Success_Statistic, status):
+    """Update per-scenario success statistics.
+
+    Args:
+        scenario_name: Name of the scenario type.
+        Success_Statistic: Dictionary tracking [successes, total_attempts] per scenario.
+        status: Boolean indicating if the scenario was successful.
+    """
     if scenario_name not in Success_Statistic:
         if status:
             Success_Statistic[scenario_name] = [1, 1]
@@ -43,7 +102,6 @@ def update_Success(scenario_name, Success_Statistic, status):
         Success_Statistic[scenario_name][1] += 1
         if status:
             Success_Statistic[scenario_name][0] += 1
-    pass
 
 def get_position(xml_route):
     waypoints_elem = xml_route.find('waypoints')

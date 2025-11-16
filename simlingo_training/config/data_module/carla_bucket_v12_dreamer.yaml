@@ -1,23 +1,48 @@
+# Bucketed sampling configuration with Dreamer world model data support
+# This extends the standard bucketed sampling (v12) with additional world model data
+# Dreamer data can provide synthetic/imagined scenarios for enhanced training
+
 defaults:
-  - driving
+  - driving  # Base driving configuration
 
+# Training partition sampling probabilities for real CARLA data
+# Same bucketing strategy as carla_bucket_v12.yaml
 train_partitions:
-  all: 0.082
-  acceleration_negative_5: 0.03  # smaller than -5 m/s^2  -> -20 AND -5
-  acceleration_negative_1: 0.03  # between -1 and -5 m/s^2 -> -1
-  acceleration_positive_1: 0.03  # between 1 and 5 m/s^2 -> 5
-  acceleration_positive_5: 0.03  # larger than 5 m/s^2 -> 20
-  lateral_control_1_2: 0.12  # wp diff in y dir larger than 0.1 and smaller than 1 -> 1
-  lateral_control_higher_5: 0.12  # wp diff in y dir larger than 5 -> 5 AND 1000000
-  start_from_stop: 0.07
-  vehicle_front: 0.04
-  vehicle_side: 0.08
-  leading_object_vehicle: 0.09
-  leading_object_traffic.stop: 0.07
-  leading_object_traffic.traffic_light: 0.07
-  leading_object_walker: 0.05
-  changed_route: 0.08
-  parkinglane: 0.008
+  # General driving scenarios
+  all: 0.082  # General/uncategorized driving data
 
+  # Acceleration-based partitions (for diverse speed control learning)
+  acceleration_negative_5: 0.03  # Hard braking: acceleration < -5 m/s^2
+  acceleration_negative_1: 0.03  # Moderate braking: -5 m/s^2 < acceleration < -1 m/s^2
+  acceleration_positive_1: 0.03  # Gentle acceleration: 1 m/s^2 < acceleration < 5 m/s^2
+  acceleration_positive_5: 0.03  # Strong acceleration: acceleration > 5 m/s^2
+
+  # Lateral control partitions (for turning and lane change diversity)
+  lateral_control_1_2: 0.12  # Moderate turning: waypoint y-offset between 0.1 and 1 meter
+  lateral_control_higher_5: 0.12  # Sharp turns: waypoint y-offset > 5 meters
+
+  # Start/stop scenarios
+  start_from_stop: 0.07  # Vehicle starting from standstill
+
+  # Object interaction scenarios (vehicles)
+  vehicle_front: 0.04  # Vehicle directly in front
+  vehicle_side: 0.08  # Vehicle beside ego vehicle
+  leading_object_vehicle: 0.09  # Following another vehicle
+
+  # Traffic control scenarios
+  leading_object_traffic.stop: 0.07  # Approaching stop sign
+  leading_object_traffic.traffic_light: 0.07  # Interacting with traffic light
+
+  # Pedestrian scenarios
+  leading_object_walker: 0.05  # Pedestrian near or crossing path
+
+  # Navigation scenarios
+  changed_route: 0.08  # Route replanning/changes
+
+  # Special scenarios
+  parkinglane: 0.008  # Parking lane navigation
+
+# Sampling configuration for Dreamer world model dataset
+# World models can generate imagined/predicted scenarios
 train_partitions_dreamer:
-  all: 1.0
+  all: 1.0  # Uniform sampling from all dreamer data (no scenario-based bucketing)

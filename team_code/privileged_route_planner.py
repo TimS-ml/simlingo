@@ -1,7 +1,31 @@
-"""
-This Python script defines a PrivilegedRoutePlanner class for planning and modifying routes in the CARLA 
-simulation environment. The class provides functionalities to create a smooth and interpolated route,
-compute distances to traffic lights and stop signs, handle lane changes, and identify leading and trailing vehicles.
+"""Privileged Route Planner - Advanced Route Preprocessing and Scenario Handling.
+
+This module implements the PrivilegedRoutePlanner which extends basic route planning
+with advanced preprocessing and scenario-specific modifications. It provides the expert
+AutoPilot agent with a high-quality route that handles complex driving scenarios.
+
+The planner provides:
+1. Dense interpolated routes (10 points per meter) for smooth control
+2. Lane change detection and adaptation
+3. Scenario-specific route modifications:
+   - Construction obstacles: Plan safe overtaking maneuvers
+   - Hazards at side lanes: Adjust lateral position for safety
+   - Two-way scenarios: Handle oncoming traffic during overtaking
+   - Yield to emergency vehicles: Safe lane shifting
+   - Invading turn: Tight turn handling with fence avoidance
+4. Traffic element tracking:
+   - Distance to next traffic light with state (red/yellow/green)
+   - Distance to next stop sign with cleared status
+   - Leading vehicle detection and tracking
+   - Trailing vehicle detection (for safe lane changes)
+5. Speed limit extraction from HD map
+
+The route planner uses KD-trees for efficient spatial queries and spline interpolation
+for smooth trajectories. It modifies the global route dynamically based on detected
+scenarios to ensure safe and natural expert driving behavior.
+
+Classes:
+    PrivilegedRoutePlanner: Advanced route planner with scenario handling
 """
 
 import numpy as np

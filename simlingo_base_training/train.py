@@ -1,3 +1,43 @@
+"""Main training script for SimLingo-Base model.
+
+This script orchestrates the complete training pipeline for the SimLingo-Base
+autonomous driving model. It handles configuration, data loading, model initialization,
+distributed training, logging, and checkpointing.
+
+Key Features:
+    - Hydra-based configuration management
+    - PyTorch Lightning training framework
+    - DeepSpeed integration for distributed training
+    - Weights & Biases logging
+    - Automatic checkpoint management
+    - Support for resuming training
+
+Differences from Full SimLingo:
+    - Simplified training setup (vision-only)
+    - Smaller model sizes for faster iteration
+    - No language model generation during training
+    - Focused on waypoint prediction only
+
+Usage:
+    python train.py [OPTIONS]
+
+    Examples:
+        # Train with default config
+        python train.py
+
+        # Override specific parameters
+        python train.py model.lr=2e-4 data_module.batch_size=32
+
+        # Resume from checkpoint
+        python train.py resume=true resume_path=/path/to/checkpoint
+
+Dependencies:
+    - PyTorch Lightning: Training framework
+    - Hydra: Configuration management
+    - DeepSpeed: Distributed training optimization
+    - Weights & Biases: Experiment tracking
+"""
+
 import os
 
 import hydra
@@ -15,6 +55,23 @@ from simlingo_base_training.utils.logging_project import setup_logging
 
 @hydra.main(config_path=f"config", config_name="config", version_base="1.1")
 def main(cfg: TrainConfig):
+    """Main training function.
+
+    Sets up and executes the complete training pipeline including data loading,
+    model initialization, trainer configuration, and training loop execution.
+
+    Args:
+        cfg: Hydra configuration object containing all training parameters.
+
+    Returns:
+        None
+
+    Side Effects:
+        - Creates checkpoint directory
+        - Saves model checkpoints
+        - Logs metrics to Weights & Biases
+        - Writes git info and arguments to log directory
+    """
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(cfg.seed, workers=True)
 

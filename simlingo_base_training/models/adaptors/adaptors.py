@@ -1,3 +1,27 @@
+"""Adaptor modules for converting model outputs to predictions.
+
+This module provides adaptor classes that convert language model outputs into
+task-specific predictions (waypoints, routes) and compute associated losses.
+
+Key Components:
+    - WaypointInputAdaptor: Encodes waypoint/route coordinates into tokens
+    - VectorInputAdaptor: Encodes scalar inputs (speed) into tokens
+    - DrivingAdaptor: Main adaptor with query embeddings and prediction heads
+    - AdaptorList: Container managing multiple adaptors
+
+Architecture:
+    Adaptors use learnable query embeddings that are concatenated with vision/route
+    embeddings and passed through the language model. The language model outputs
+    corresponding to query positions are then decoded into predictions.
+
+    This follows a DETR-like approach where queries represent prediction targets.
+
+Differences from Full SimLingo:
+    - Only driving predictions (waypoints + routes)
+    - No language generation adaptors
+    - Simpler architecture focused on trajectory prediction
+"""
+
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -7,6 +31,7 @@ from torch import Tensor, nn
 from simlingo_base_training.utils.custom_types import DrivingExample
 
 class NormZeroOne(nn.Module):
+    """Normalize input to [0, 1] range using fixed min/max values."""
     def __init__(self, min_max: Tuple[float, float]):
         super().__init__()
         self.register_buffer("min_max", torch.tensor(min_max, dtype=torch.float), persistent=False)

@@ -1,53 +1,82 @@
 # @package _global_
+# Production experiment configuration for SimLingo training (Seed 1)
+# This is a full-scale training run optimized for multi-GPU distributed training
+# Uses the complete SimLingo dataset with all augmentations and features enabled
+
+# Hydra defaults - compose configuration from multiple sources
 defaults:
-  - /data_module: carla_bucket_v12_dreamer
-  - /model/vision_model: vlm
-  - /data_module/base_dataset: dataset
+  - /data_module: carla_bucket_v12_dreamer  # Bucketed sampling with optional dreamer data
+  - /model/vision_model: vlm  # Vision-language model architecture
+  - /data_module/base_dataset: dataset  # Base dataset configuration
 
+# Model hyperparameters
 model:
-  lr: 3e-5
-  predict_route_as_wps: True
-  speed_wps_mode: 2d
+  lr: 3e-5  # Learning rate for training
+  predict_route_as_wps: True  # Predict route as sequence of waypoints
+  speed_wps_mode: 2d  # Waypoint representation: 2D (x, y) coordinates
+
+  # Language model configuration
   language_model:
-    variant: 'OpenGVLab/InternVL2-1B'
-    lora: True
-    lora_alpha: 64
-    lora_r: 32
-    lora_dropout: 0.1
+    variant: 'OpenGVLab/InternVL2-1B'  # InternVL2 1B parameter model
+    lora: True  # Use LoRA for parameter-efficient fine-tuning
+    lora_alpha: 64  # LoRA scaling factor (alpha/r = effective learning rate multiplier)
+    lora_r: 32  # LoRA rank (lower rank = fewer parameters)
+    lora_dropout: 0.1  # Dropout for LoRA layers
+
+  # Vision model configuration
   vision_model:
-    variant: 'OpenGVLab/InternVL2-1B'
+    variant: 'OpenGVLab/InternVL2-1B'  # Same architecture for vision backbone
 
+# Data loading and augmentation settings
 data_module:
-  batch_size: 6 #12
-  num_workers: 8
-  # dreamer_dataset: null
+  batch_size: 6  # Batch size per GPU (was 12, reduced for memory constraints)
+  num_workers: 8  # Parallel data loading workers for efficiency
+  # dreamer_dataset: null  # Optional: world model dataset (configure if using)
+
   base_dataset:
-    data_path: database/simlingo
-    bucket_path: database/bucketsv2_simlingo
-    pred_len: 11
-    cut_bottom_quarter: True
-    use_commentary: True
-    use_qa: True
-    qa_augmentation: True
-    img_shift_augmentation: True
-    img_shift_augmentation_prob: 0.5
-    hist_len: 1
-    route_as: target_point_command
-    use_lmdrive_commands: True
-    use_old_towns: True
-    use_town13: True
+    # Data paths
+    data_path: database/simlingo  # Main SimLingo dataset
+    bucket_path: database/bucketsv2_simlingo  # Bucketed data for balanced sampling
 
-    use_safety_flag: True
+    # Sequence parameters
+    pred_len: 11  # Number of future waypoints to predict
+    hist_len: 1  # Number of historical frames as input
 
-max_epochs: 15
-val_every_n_epochs: 2
+    # Image preprocessing
+    cut_bottom_quarter: True  # Remove bottom quarter (car hood)
 
-# debug: true
-gpus: 8
-seed: 9876
-name: simlingo_seed_9876
-resume: False
+    # Language features (key differentiator of SimLingo)
+    use_commentary: True  # Include driving commentary/explanations
+    use_qa: True  # Include question-answering pairs
+    qa_augmentation: True  # Augment QA data for diversity
 
+    # Image augmentation
+    img_shift_augmentation: True  # Random image shifts for robustness
+    img_shift_augmentation_prob: 0.5  # Apply to 50% of samples
+
+    # Route representation
+    route_as: target_point_command  # Target point with high-level command
+    use_lmdrive_commands: True  # Use LMDrive command format
+
+    # Map selection
+    use_old_towns: True  # Include Towns 1-7
+    use_town13: True  # Include Town13 (urban environment)
+
+    # Safety features
+    use_safety_flag: True  # Include safety violation labels
+
+# Training schedule
+max_epochs: 15  # Maximum number of training epochs
+val_every_n_epochs: 2  # Validate every 2 epochs (less frequent than debug)
+
+# Hardware configuration
+# debug: true  # Debug mode disabled for production
+gpus: 8  # Multi-GPU training (distributed)
+seed: 9876  # Random seed for reproducibility (seed 1 variant)
+name: simlingo_seed_9876  # Experiment identifier
+resume: False  # Start training from scratch (set True to resume from checkpoint)
+
+# Hydra output directory configuration
 hydra:
   run:
-    dir: outputs/${wandb_name}_${name}
+    dir: outputs/${wandb_name}_${name}  # Output directory for logs and checkpoints
